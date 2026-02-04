@@ -1,6 +1,6 @@
 {
   "name": "@poof/mcp-server",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "MCP server for the Poof background removal API",
   "type": "module",
   "main": "dist/index.js",
@@ -31,7 +31,9 @@
     "node": ">=18"
   },
   "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.0.0"
+    "@modelcontextprotocol/sdk": "^1.0.0",
+    "dotenv": "^17.2.3",
+    "zod": "^4.3.6"
   },
   "devDependencies": {
     "@types/node": "^20.0.0",

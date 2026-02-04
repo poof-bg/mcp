@@ -9,31 +9,6 @@ MCP (Model Context Protocol) server for the [Poof](https://poof.bg) background r
 
 ## Installation
 
-```bash
-npm install -g @poof/mcp-server
-```
-
-Or install locally:
-
-```bash
-git clone https://github.com/poof-bg/poof-sdks.git
-cd poof-sdks/mcp-server
-npm install
-npm run build
-```
-
-## Configuration
-
-### Environment Variable
-
-Set your Poof API key:
-
-```bash
-export POOF_API_KEY=your_api_key_here
-```
-
-Get your API key at [dash.poof.bg](https://dash.poof.bg)
-
 ### Claude Desktop
 
 Add to your Claude Desktop config file:
@@ -55,21 +30,43 @@ Add to your Claude Desktop config file:
 }
 ```
 
-Or if installed from source:
+### Smithery
 
-```json
-{
-  "mcpServers": {
-    "poof": {
-      "command": "node",
-      "args": ["/path/to/poof-sdks/mcp-server/dist/index.js"],
-      "env": {
-        "POOF_API_KEY": "your_api_key_here"
-      }
-    }
-  }
-}
+```bash
+npx -y @smithery/cli install @poof/mcp-server --client claude
 ```
+
+### Local Installation
+
+```bash
+# Clone the repository
+git clone https://github.com/poof-bg/mcp.git
+cd mcp
+
+# Install dependencies
+npm install
+
+# Build
+npm run build
+
+# Set environment variable
+export POOF_API_KEY=your_api_key_here
+
+# Run
+npm start
+```
+
+## Configuration
+
+### Environment Variable
+
+Set your Poof API key:
+
+```bash
+export POOF_API_KEY=your_api_key_here
+```
+
+Get your API key at [dash.poof.bg](https://dash.poof.bg)
 
 ## Tools
 
@@ -125,6 +122,49 @@ How many credits do I have left?
     "autoRechargeThreshold": 100
   }
 }
+```
+
+## Cloudflare Worker Deployment
+
+This MCP server can also be deployed as a Cloudflare Worker for remote MCP hosting.
+
+### Setup
+
+1. Install Wrangler CLI:
+```bash
+npm install -g wrangler
+```
+
+2. Authenticate with Cloudflare:
+```bash
+wrangler login
+```
+
+3. Configure your API key in Wrangler secrets:
+```bash
+wrangler secret put POOF_API_KEY
+```
+
+4. Deploy:
+```bash
+wrangler deploy
+```
+
+The worker will be available at `https://api.poof.bg/mcp` (or your configured route).
+
+### Worker Usage
+
+Send MCP requests to the worker endpoint:
+
+```bash
+curl -X POST https://api.poof.bg/mcp \
+  -H "Content-Type: application/json" \
+  -H "x-api-token: your_api_key_here" \
+  -d '{
+    "jsonrpc": "2.0",
+    "id": 1,
+    "method": "tools/list"
+  }'
 ```
 
 ## Development
