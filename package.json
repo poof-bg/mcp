@@ -1,17 +1,21 @@
 {
   "name": "@poof/mcp-server",
-  "version": "1.0.0",
-  "description": "MCP server for the Poof background removal API",
+  "version": "1.1.0",
+  "description": "MCP server for the Poof background removal API. Supports both stdio and Cloudflare Worker remote MCP.",
   "type": "module",
   "main": "dist/index.js",
   "bin": {
     "poof-mcp": "./dist/index.js"
   },
   "scripts": {
+    "dev": "wrangler dev",
     "build": "tsc",
-    "dev": "tsc --watch",
     "start": "node dist/index.js",
-    "prepublishOnly": "npm run build"
+    "prepublishOnly": "npm run build",
+    "lint": "eslint src/**/*.ts",
+    "lint:fix": "eslint src/**/*.ts --fix",
+    "format": "prettier --write .",
+    "prepare": "npm run build"
   },
   "keywords": [
     "mcp",
@@ -25,16 +29,24 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/poof-bg/poof-sdks"
+    "url": "https://github.com/poof-bg/mcp"
   },
   "engines": {
     "node": ">=18"
   },
   "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.0.0"
+    "@modelcontextprotocol/sdk": "^1.25.3",
+    "dotenv": "^16.4.7",
+    "zod": "^3.25.76"
   },
   "devDependencies": {
     "@types/node": "^20.0.0",
-    "typescript": "^5.0.0"
+    "@typescript-eslint/eslint-plugin": "^7.0.0",
+    "@typescript-eslint/parser": "^7.0.0",
+    "eslint": "^8.56.0",
+    "eslint-config-prettier": "^9.1.0",
+    "prettier": "^3.1.1",
+    "typescript": "^5.0.0",
+    "wrangler": "^3.0.0"
   }
 }
