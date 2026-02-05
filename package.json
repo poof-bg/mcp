@@ -1,5 +1,5 @@
 {
-  "name": "@poof/mcp-server",
+  "name": "@poof-bg/mcp",
   "version": "1.1.0",
   "description": "MCP server for the Poof background removal API. Supports both stdio and Cloudflare Worker remote MCP.",
   "type": "module",

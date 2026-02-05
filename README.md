@@ -1,4 +1,4 @@
-# @poof/mcp-server
+# @poof-bg/mcp
 
 MCP (Model Context Protocol) server for the [Poof](https://poof.bg) background removal API. Use AI assistants like Claude to remove backgrounds from images.
 
@@ -13,7 +13,7 @@ MCP (Model Context Protocol) server for the [Poof](https://poof.bg) background r
 ### Local (stdio transport)
 
 ```bash
-npm install -g @poof/mcp-server
+npm install -g @poof-bg/mcp
 ```
 
 Or install locally:
@@ -62,7 +62,7 @@ Add to your Claude Desktop config file:
   "mcpServers": {
     "poof": {
       "command": "npx",
-      "args": ["-y", "@poof/mcp-server"],
+      "args": ["-y", "@poof-bg/mcp"],
       "env": {
         "POOF_API_KEY": "your_api_key_here"
       }
@@ -97,7 +97,7 @@ Add to `.cursor/mcp.json` in your project root (or global config):
   "mcpServers": {
     "poof": {
       "command": "npx",
-      "args": ["-y", "@poof/mcp-server"],
+      "args": ["-y", "@poof-bg/mcp"],
       "env": {
         "POOF_API_KEY": "your_api_key_here"
       }
@@ -132,7 +132,7 @@ Add to `~/.codeium/windsurf/mcp_config.json`:
   "mcpServers": {
     "poof": {
       "command": "npx",
-      "args": ["-y", "@poof/mcp-server"],
+      "args": ["-y", "@poof-bg/mcp"],
       "env": {
         "POOF_API_KEY": "your_api_key_here"
       }
@@ -168,7 +168,7 @@ Add to your VS Code `settings.json`:
     "servers": {
       "poof": {
         "command": "npx",
-        "args": ["-y", "@poof/mcp-server"],
+        "args": ["-y", "@poof-bg/mcp"],
         "env": {
           "POOF_API_KEY": "your_api_key_here"
         }
@@ -205,7 +205,7 @@ Open Cline settings and add to the MCP Servers configuration:
 {
   "poof": {
     "command": "npx",
-    "args": ["-y", "@poof/mcp-server"],
+    "args": ["-y", "@poof-bg/mcp"],
     "env": {
       "POOF_API_KEY": "your_api_key_here"
     }
