@@ -1,77 +1,170 @@
-import { createMcpServer } from './mcp.js';
+import OAuthProvider from '@cloudflare/workers-oauth-provider';
 import {
-  WebStandardStreamableHTTPServerTransport,
+  WebStandardStreamableHTTPServerTransport
 } from '@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js';
+import type { Server } from '@modelcontextprotocol/sdk/server/index.js';
 
-export default {
-  async fetch(
-    request: Request,
-    env: { POOF_API_KEY: string },
-    _ctx: any
-  ): Promise<Response> {
-    try {
-      let apiKey = request.headers.get('x-api-token');
+import { createMcpServer } from './mcp.js';
+import { authHandler } from './auth-handler.js';
 
-      if (!apiKey) {
-        apiKey = request.headers.get('x-api-key');
-      }
+// Handle MCP requests with a direct API key (legacy / backward-compatible)
+async function handleMcpWithApiKey(request: Request, apiKey: string): Promise<Response> {
+  if (request.method !== 'POST') {
+    return new Response(
+      JSON.stringify({
+        jsonrpc: '2.0',
+        error: {
+          code: -32000,
+          message: 'Method not allowed. Use POST for JSON-RPC requests.',
+        },
+        id: null,
+      }),
+      {
+        status: 405,
+        headers: { 'Content-Type': 'application/json', Allow: 'POST' },
+      },
+    );
+  }
 
-      if (!apiKey) {
-        apiKey = env.POOF_API_KEY;
-      }
+  let server: Server | null = null;
 
-      if (!apiKey) {
-        console.error(
-          'CRITICAL: No API token provided via headers (x-api-token, x-api-key) or environment (POOF_API_KEY).'
-        );
-      } else {
-        console.log(`Received API Key (length: ${apiKey.length})`);
-      }
+  try {
+    const transport = new WebStandardStreamableHTTPServerTransport({
+      sessionIdGenerator: undefined,
+      enableJsonResponse: true,
+    });
 
-      const transport = new WebStandardStreamableHTTPServerTransport({
-        sessionIdGenerator: undefined,
-      });
+    const result = createMcpServer({ poofApiKey: apiKey });
+    server = result.server;
 
-      const { server } = createMcpServer({
-        poofApiKey: apiKey || '',
-      });
+    await server.connect(transport);
 
-      await server.connect(transport);
+    const response = await transport.handleRequest(request);
+    return response ?? new Response('Not Found', { status: 404 });
+  } catch (err: any) {
+    console.error('Worker Error:', err);
+    return new Response(
+      JSON.stringify({ error: `Server Internal Error: ${err?.message}` }),
+      { status: 500, headers: { 'Content-Type': 'application/json' } },
+    );
+  } finally {
+    if (server) {
+      await server.close();
+    }
+  }
+}
 
-      if (apiKey) {
-        const prefix = apiKey.substring(0, 4);
-        const suffix = apiKey.substring(apiKey.length - 4);
-        console.error(
-          `Received API Key (length: ${apiKey.length}). Debug: ${prefix}...${suffix}`
-        );
-      } else {
-        console.error('CRITICAL: API Key is empty!');
-      }
+// OAuth-authenticated MCP handler
+// The OAuthProvider injects authenticated `props` (including apiKey) via the execution context
+const mcpHandler = {
+  async fetch(request: Request, env: any, ctx: any): Promise<Response> {
+    const props = ctx?.props || {};
+    const apiKey = props.apiKey as string;
 
-      const url = new URL(request.url);
-      if (url.pathname === '/' && request.method === 'GET') {
-        return new Response(
-          'Poof MCP Worker is running. Endpoint: /message or /sse',
-          {
-            status: 200,
-            headers: { 'Content-Type': 'text/plain' },
-          }
-        );
-      }
-
-      const response = await transport.handleRequest(request);
-      return response ?? new Response('Not Found', { status: 404 });
-    } catch (err: any) {
-      console.error('Worker Error:', err);
-      const actualEnvKey = env.POOF_API_KEY ? 'Present' : 'Missing';
-      const debugMsg = `Server Internal Error: ${err?.message}. Env Status: ${actualEnvKey}`;
-
+    if (!apiKey) {
       return new Response(
-        JSON.stringify({
-          error: debugMsg,
-        }),
-        { status: 500 }
+        JSON.stringify({ error: 'No API key in OAuth context' }),
+        { status: 401, headers: { 'Content-Type': 'application/json' } },
       );
     }
+
+    return handleMcpWithApiKey(request, apiKey);
+  },
+};
+
+export default {
+  async fetch(request: Request, env: any, ctx: any): Promise<Response> {
+    const url = new URL(request.url);
+
+    // Health check
+    if (url.pathname === '/' && request.method === 'GET') {
+      return new Response('Poof MCP Worker is running.', {
+        status: 200,
+        headers: { 'Content-Type': 'text/plain' },
+      });
+    }
+
+    // Legacy API key support: if x-api-key header is present, bypass OAuth entirely
+    const apiKey = request.headers.get('x-api-key')
+      || request.headers.get('x-api-token');
+
+    if (apiKey && url.pathname === '/mcp') {
+      console.log(`Received API Key via header (length: ${apiKey.length})`);
+      return handleMcpWithApiKey(request, apiKey);
+    }
+
+    // Also support POOF_API_KEY env var for direct POST to /mcp (backward compat)
+    if (!apiKey && env.POOF_API_KEY && url.pathname === '/mcp' && request.method === 'POST') {
+      console.log(`Using env POOF_API_KEY (length: ${env.POOF_API_KEY.length})`);
+      return handleMcpWithApiKey(request, env.POOF_API_KEY);
+    }
+
+    // Serve OAuth Protected Resource Metadata (RFC 9728)
+    if (url.pathname === '/.well-known/oauth-protected-resource') {
+      return new Response(
+        JSON.stringify({
+          resource: 'https://api.poof.bg',
+          authorization_servers: ['https://api.poof.bg'],
+          scopes_supported: ['mcp'],
+          bearer_methods_supported: ['header'],
+        }),
+        {
+          headers: {
+            'Content-Type': 'application/json',
+            'Access-Control-Allow-Origin': '*',
+          },
+        },
+      );
+    }
+
+    // Log all requests for debugging
+    console.log(`[OAuth] ${request.method} ${url.pathname} (auth: ${request.headers.has('authorization') ? 'Bearer' : 'none'})`);
+
+    // Strip `resource` parameter from token exchange requests.
+    // Claude sends resource=https://api.poof.bg/ (trailing slash) which gets stored
+    // as the token audience. The library then validates tokens against protocol://host
+    // (no trailing slash) using strict equality, causing every MCP request to fail with
+    // "Token audience does not match resource server". Removing `resource` from both
+    // the grant (auth-handler) and the token exchange body prevents audience from being set.
+    let processedRequest = request;
+    if (url.pathname === '/oauth/token' && request.method === 'POST') {
+      const body = await request.text();
+      const params = new URLSearchParams(body);
+      if (params.has('resource')) {
+        console.log(`[OAuth] Stripping resource param from token exchange: ${params.get('resource')}`);
+        params.delete('resource');
+        processedRequest = new Request(request, { body: params.toString() });
+      }
+    }
+
+    // OAuth flow for everything else
+    const provider = new OAuthProvider({
+      apiRoute: '/mcp',
+      apiHandler: mcpHandler,
+      defaultHandler: authHandler,
+      authorizeEndpoint: '/oauth/authorize',
+      tokenEndpoint: '/oauth/token',
+      clientRegistrationEndpoint: '/oauth/register',
+      scopesSupported: ['mcp'],
+      accessTokenTTL: 3600,       // 1 hour
+      refreshTokenTTL: 2592000,   // 30 days
+      onError({ code, description, status, headers }) {
+        console.log(`[OAuth Error] status=${status} code=${code} desc=${description}`);
+        // Add resource_metadata to WWW-Authenticate header on 401 (RFC 9728)
+        if (status === 401) {
+          const newHeaders = { ...headers };
+          newHeaders['WWW-Authenticate'] =
+            `Bearer resource_metadata="https://api.poof.bg/.well-known/oauth-protected-resource"`;
+          return new Response(JSON.stringify({ error: code, error_description: description }), {
+            status,
+            headers: { ...newHeaders, 'Content-Type': 'application/json' },
+          });
+        }
+      },
+    });
+
+    const response = await provider.fetch(processedRequest, env, ctx);
+    console.log(`[OAuth Response] ${url.pathname} -> ${response.status}`);
+    return response;
   },
 };

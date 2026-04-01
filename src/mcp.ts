@@ -243,7 +243,7 @@ const toolRegistry = {
     },
     handler: async (_args: any, apiKey: string) => {
       const response = await callPoofApi('/me', {}, apiKey, 'GET');
-      const data = await response.json();
+      const data = await response.json() as Record<string, any>;
 
       return {
         success: true,
