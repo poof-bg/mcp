@@ -41,7 +41,15 @@ export POOF_API_KEY=your_api_key_here
 
 Get your API key at [dash.poof.bg](https://dash.poof.bg)
 
-### Claude Code (HTTP Transport)
+### Claude Code
+
+#### OAuth (recommended)
+
+```bash
+claude mcp add --transport http poof https://api.poof.bg/mcp
+```
+
+#### API Key
 
 ```bash
 claude mcp add --transport http poof https://api.poof.bg/mcp \
@@ -52,10 +60,22 @@ claude mcp add --transport http poof https://api.poof.bg/mcp \
 
 Add to your Claude Desktop config file:
 
-**macOS:** `~/Library/Application Support/Claude/claude_desktop_config.json`  
+**macOS:** `~/Library/Application Support/Claude/claude_desktop_config.json`
 **Windows:** `%APPDATA%\Claude\claude_desktop_config.json`
 
-#### Option 1: Local (stdio transport)
+#### Option 1: Remote with OAuth (recommended)
+
+```json
+{
+  "mcpServers": {
+    "poof": {
+      "url": "https://api.poof.bg/mcp"
+    }
+  }
+}
+```
+
+#### Option 2: Local (stdio transport)
 
 ```json
 {
@@ -71,7 +91,7 @@ Add to your Claude Desktop config file:
 }
 ```
 
-#### Option 2: Remote (HTTP transport)
+#### Option 3: Remote with API key
 
 ```json
 {
@@ -90,6 +110,18 @@ Add to your Claude Desktop config file:
 
 Add to `.cursor/mcp.json` in your project root (or global config):
 
+#### OAuth (recommended)
+
+```json
+{
+  "mcpServers": {
+    "poof": {
+      "url": "https://api.poof.bg/mcp"
+    }
+  }
+}
+```
+
 #### Local (stdio)
 
 ```json
@@ -106,7 +138,7 @@ Add to `.cursor/mcp.json` in your project root (or global config):
 }
 ```
 
-#### Remote (HTTP)
+#### Remote with API key
 
 ```json
 {
@@ -125,6 +157,18 @@ Add to `.cursor/mcp.json` in your project root (or global config):
 
 Add to `~/.codeium/windsurf/mcp_config.json`:
 
+#### OAuth (recommended)
+
+```json
+{
+  "mcpServers": {
+    "poof": {
+      "serverUrl": "https://api.poof.bg/mcp"
+    }
+  }
+}
+```
+
 #### Local (stdio)
 
 ```json
@@ -141,7 +185,7 @@ Add to `~/.codeium/windsurf/mcp_config.json`:
 }
 ```
 
-#### Remote (HTTP)
+#### Remote with API key
 
 ```json
 {
@@ -159,6 +203,20 @@ Add to `~/.codeium/windsurf/mcp_config.json`:
 ### VS Code + Copilot
 
 Add to your VS Code `settings.json`:
+
+#### OAuth (recommended)
+
+```json
+{
+  "mcp": {
+    "servers": {
+      "poof": {
+        "url": "https://api.poof.bg/mcp"
+      }
+    }
+  }
+}
+```
 
 #### Local (stdio)
 
@@ -178,7 +236,7 @@ Add to your VS Code `settings.json`:
 }
 ```
 
-#### Remote (HTTP)
+#### Remote with API key
 
 ```json
 {
@@ -199,6 +257,16 @@ Add to your VS Code `settings.json`:
 
 Open Cline settings and add to the MCP Servers configuration:
 
+#### OAuth (recommended)
+
+```json
+{
+  "poof": {
+    "url": "https://api.poof.bg/mcp"
+  }
+}
+```
+
 #### Local (stdio)
 
 ```json
@@ -213,7 +281,7 @@ Open Cline settings and add to the MCP Servers configuration:
 }
 ```
 
-#### Remote (HTTP)
+#### Remote with API key
 
 ```json
 {
@@ -320,10 +388,25 @@ wrangler login
 wrangler deploy
 ```
 
-Make sure to set your `POOF_API_KEY` in the Cloudflare Worker environment variables:
+Set the required environment secrets:
 
 ```bash
 wrangler secret put POOF_API_KEY
+wrangler secret put MCP_JWT_SECRET
+wrangler secret put COOKIE_ENCRYPTION_KEY
+```
+
+Also set the dashboard URL variable:
+
+```bash
+wrangler secret put DASHBOARD_URL
+```
+
+You'll also need to create a KV namespace for OAuth state storage and update the IDs in `wrangler.toml`:
+
+```bash
+wrangler kv namespace create OAUTH_KV
+wrangler kv namespace create OAUTH_KV --preview
 ```
 
 ## License
