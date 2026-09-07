@@ -128,7 +128,7 @@ const toolRegistry = {
     schema: {
       name: 'remove_background',
       description:
-        'Remove the background from an image. Returns the processed image as base64. Accepts URL or base64-encoded image.',
+        'Remove the background from an image. Returns the processed image as base64. Accepts URL or base64-encoded image. Can also resize the result to an exact width x height without stretching (width, height, fit).',
       inputSchema: {
         type: 'object',
         properties: {
@@ -157,14 +157,36 @@ const toolRegistry = {
           },
           size: {
             type: 'string',
-            enum: ['full', 'preview', 'small', 'medium', 'large'],
+            enum: ['full', 'preview', 'medium', 'hd'],
             default: 'full',
-            description: 'Output image size preset',
+            description:
+              'Output image size preset (megapixel cap). Ignored when width or height is set',
           },
           crop: {
             type: 'boolean',
             default: false,
             description: 'Whether to crop the image to the subject bounds',
+          },
+          width: {
+            type: 'integer',
+            minimum: 1,
+            maximum: 6000,
+            description:
+              'Output width in pixels. On its own, the height follows the aspect ratio. With height, the image is fitted into an exact width x height canvas without stretching',
+          },
+          height: {
+            type: 'integer',
+            minimum: 1,
+            maximum: 6000,
+            description:
+              'Output height in pixels. On its own, the width follows the aspect ratio. With width, the image is fitted into an exact width x height canvas without stretching',
+          },
+          fit: {
+            type: 'string',
+            enum: ['contain', 'cover', 'scale-down'],
+            default: 'contain',
+            description:
+              "How to fit the image into width x height. 'contain' pads the remaining area (transparent or bg_color), 'cover' fills the canvas and crops the overflow around the subject, 'scale-down' is like contain but never enlarges a smaller image",
           },
         },
         required: ['image'],
@@ -191,6 +213,15 @@ const toolRegistry = {
       }
       if (args.crop !== undefined) {
         formData.append('crop', String(args.crop));
+      }
+      if (args.width !== undefined) {
+        formData.append('width', String(args.width));
+      }
+      if (args.height !== undefined) {
+        formData.append('height', String(args.height));
+      }
+      if (args.fit) {
+        formData.append('fit', args.fit);
       }
 
       const response = await callPoofApi('/remove', {}, apiKey, 'POST', formData);

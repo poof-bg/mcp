@@ -310,8 +310,11 @@ Remove the background from an image.
 | `format` | string | No | Output format: `png`, `jpg`, `webp` (default: `png`) |
 | `channels` | string | No | Color channels: `rgba` for transparency, `rgb` for opaque (default: `rgba`) |
 | `bg_color` | string | No | Background color when using `rgb` channels (e.g., `#ffffff`) |
-| `size` | string | No | Output size: `full`, `preview`, `small`, `medium`, `large` (default: `full`) |
+| `size` | string | No | Output size preset: `full`, `preview`, `medium`, `hd` (default: `full`). Ignored when `width`/`height` is set |
 | `crop` | boolean | No | Crop to subject bounds (default: `false`) |
+| `width` | integer | No | Output width in pixels (1-6000). Alone, the height follows the aspect ratio |
+| `height` | integer | No | Output height in pixels (1-6000). Alone, the width follows the aspect ratio |
+| `fit` | string | No | How to fit into `width` x `height` without stretching: `contain` (default, pad), `cover` (fill, crop the overflow around the subject), `scale-down` (pad, never enlarge) |
 
 **Example prompts:**
 
@@ -319,6 +322,8 @@ Remove the background from an image.
 Remove the background from this image: https://example.com/photo.jpg
 
 Remove the background and add a white background instead
+
+Remove the background and give me a 500x500 image with the product centred
 ```
 
 ### get_account
