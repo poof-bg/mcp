@@ -1,0 +1,50 @@
+name: Release
+
+# Publishes to npm whenever a version tag is pushed (or a GitHub release is
+# created, which pushes the tag). The tag must match package.json, e.g. tag
+# v1.2.0 for "version": "1.2.0".
+#
+# Auth uses npm trusted publishing (OIDC), so no token is stored in GitHub.
+# One-time setup on npmjs.com: package @poof-bg/mcp -> Settings -> Trusted
+# publisher -> GitHub Actions with organization "poof-bg", repository "mcp",
+# workflow filename "release.yml".
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+
+      # Trusted publishing needs npm >= 11.5.1
+      - name: Update npm
+        run: npm install -g npm@latest
+
+      - name: Check that the tag matches package.json
+        run: |
+          version=$(node -p "require('./package.json').version")
+          if [ "v$version" != "$GITHUB_REF_NAME" ]; then
+            echo "Tag $GITHUB_REF_NAME does not match version $version in package.json" >&2
+            exit 1
+          fi
+
+      - run: npm ci
+
+      - run: npm run lint
+
+      - run: npm run build
+
+      - name: Publish to npm
+        run: npm publish --provenance --access public
