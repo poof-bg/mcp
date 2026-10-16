@@ -1,7 +1,7 @@
 {
   "name": "@poof-bg/mcp",
-  "version": "1.2.0",
-  "description": "MCP server for the Poof background removal API. Supports both stdio and Cloudflare Worker remote MCP.",
+  "version": "1.3.0",
+  "description": "MCP server for the Poof background removal API (images and video). Supports both stdio and Cloudflare Worker remote MCP.",
   "type": "module",
   "main": "dist/index.js",
   "bin": {

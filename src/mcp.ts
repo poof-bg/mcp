@@ -123,6 +123,32 @@ async function callPoofApi(
   return res;
 }
 
+
+const JOB_POLL_INTERVAL_MS = 3000;
+const JOB_WAIT_MAX_MS = 50000;
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function fetchJob(jobId: string, apiKey: string): Promise<Record<string, any>> {
+  const response = await callPoofApi(`/jobs/${encodeURIComponent(jobId)}`, {}, apiKey, 'GET');
+  return (await response.json()) as Record<string, any>;
+}
+
+function jobResult(job: Record<string, any>) {
+  const done = job.status === 'completed' || job.status === 'failed';
+  return {
+    success: job.status !== 'failed',
+    job,
+    ...(done
+      ? {}
+      : {
+          hint: `The video is still ${job.status}. Call get_job with job_id "${job.id}" to check again; result_url is set once the status is completed.`,
+        }),
+  };
+}
+
 const toolRegistry = {
   remove_background: {
     schema: {
@@ -197,7 +223,7 @@ const toolRegistry = {
 
       const formData = new FormData();
       const blob = new Blob([buffer], { type: 'application/octet-stream' });
-      formData.append('image_file', blob, filename);
+      formData.append('file', blob, filename);
 
       if (args.format) {
         formData.append('format', args.format);
@@ -261,6 +287,119 @@ const toolRegistry = {
     },
   },
 
+  remove_video_background: {
+    schema: {
+      name: 'remove_video_background',
+      description:
+        'Remove the background from a video given by public URL. Returns a job; when wait is true (default) the tool polls for up to 50 seconds and returns the finished job with result_url (a direct download link valid for 24 hours). For longer videos call get_job with the returned job id until status is completed. Costs 5 credits per second of video.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          video_url: {
+            type: 'string',
+            description:
+              'Public https URL of the video (mp4, mov, webm or mkv; up to 500 MB and 5 minutes)',
+          },
+          format: {
+            type: 'string',
+            enum: ['webm', 'mov', 'mp4'],
+            default: 'webm',
+            description:
+              "Output container. 'webm' (VP9) and 'mov' (ProRes 4444) keep transparency; 'mp4' (H.264) has no alpha and is composited onto bg_color",
+          },
+          channels: {
+            type: 'string',
+            enum: ['rgba', 'rgb', 'alpha'],
+            default: 'rgba',
+            description:
+              "'rgba' for a transparent video, 'rgb' for an opaque video on bg_color, 'alpha' for a grayscale matte video (no audio)",
+          },
+          bg_color: {
+            type: 'string',
+            description:
+              "Background color (hex, rgb, or color name) used when the output has no transparency (channels 'rgb' or format 'mp4'). Defaults to white. Example: '#00ff00' for green screen",
+          },
+          size: {
+            type: 'string',
+            enum: ['full', 'preview', 'medium', 'hd'],
+            default: 'full',
+            description:
+              'Output size preset. The longest side is capped at 640 (preview), 1280 (medium) or 1920 (hd/full) pixels',
+          },
+          wait: {
+            type: 'boolean',
+            default: true,
+            description:
+              'Poll until the job finishes (up to 50 seconds) before returning. Set to false to get the job id back immediately',
+          },
+        },
+        required: ['video_url'],
+      },
+    },
+    handler: async (args: any, apiKey: string) => {
+      if (typeof args.video_url !== 'string' || !args.video_url.startsWith('https://')) {
+        throw new Error('video_url must be a public https:// URL');
+      }
+
+      const formData = new FormData();
+      formData.append('url', args.video_url);
+      if (args.format) {
+        formData.append('format', args.format);
+      }
+      if (args.channels) {
+        formData.append('channels', args.channels);
+      }
+      if (args.bg_color) {
+        formData.append('bg_color', args.bg_color);
+      }
+      if (args.size) {
+        formData.append('size', args.size);
+      }
+
+      const response = await callPoofApi('/remove', {}, apiKey, 'POST', formData);
+      if (response.status !== 202) {
+        throw new Error(
+          `Expected a video job (202) but the API returned ${response.status}. Is video_url a video?`
+        );
+      }
+      let job = (await response.json()) as Record<string, any>;
+
+      if (args.wait !== false) {
+        const deadline = Date.now() + JOB_WAIT_MAX_MS;
+        while (job.status !== 'completed' && job.status !== 'failed' && Date.now() < deadline) {
+          await sleep(Math.min(JOB_POLL_INTERVAL_MS, Math.max(0, deadline - Date.now())));
+          job = await fetchJob(job.id, apiKey);
+        }
+      }
+
+      return jobResult(job);
+    },
+  },
+
+  get_job: {
+    schema: {
+      name: 'get_job',
+      description:
+        'Get the status of a video background removal job started with remove_video_background. Polling is free. When status is completed the job carries result_url, a direct download link valid for 24 hours.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          job_id: {
+            type: 'string',
+            description: 'Job id returned by remove_video_background (starts with job_)',
+          },
+        },
+        required: ['job_id'],
+      },
+    },
+    handler: async (args: any, apiKey: string) => {
+      if (typeof args.job_id !== 'string' || !args.job_id) {
+        throw new Error('job_id is required');
+      }
+      return jobResult(await fetchJob(args.job_id, apiKey));
+    },
+  },
+
   get_account: {
     schema: {
       name: 'get_account',
@@ -306,7 +445,7 @@ export const configSchema = z.object({
 
 export function createMcpServer(config: { poofApiKey: string; debug?: boolean }) {
   const server = new Server(
-    { name: 'poof', version: '1.1.0' },
+    { name: 'poof', version: '1.3.0' },
     { capabilities: { tools: {} } }
   );
 
