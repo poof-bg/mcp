@@ -2,13 +2,14 @@ import { describe, expect, jest, test, beforeEach, afterEach } from '@jest/globa
 import { readFileSync } from 'node:fs';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
-import { buildUserAgent, callTool, createMcpServer, listTools, retryConfig } from './mcp.js';
+import { buildUserAgent, callTool, createMcpServer, jobPollConfig, listTools, retryConfig } from './mcp.js';
 import { detectClient, resolveClient, sanitizeClientName } from './client.js';
 import { VERSION } from './version.js';
 
 const API_KEY = 'test-api-key';
 const CTX = { apiKey: API_KEY, userAgent: buildUserAgent('test-client', 'hosted') };
 const IMAGE_URL = 'https://example.com/photo.jpg';
+const VIDEO_URL = 'https://example.com/clip.mp4';
 const PNG_BYTES = new Uint8Array([0x89, 0x50, 0x4e, 0x47]);
 
 // A fetch stub for the two calls remove_background makes: downloading the
@@ -64,8 +65,13 @@ describe('mcp tool registry', () => {
     (globalThis as any).fetch = originalFetch;
   });
 
-  test('lists both tools', () => {
-    expect(listTools().map((t) => t.name).sort()).toEqual(['get_account', 'remove_background']);
+  test('lists the four tools', () => {
+    expect(listTools().map((t) => t.name).sort()).toEqual([
+      'get_account',
+      'get_job',
+      'remove_background',
+      'remove_video_background',
+    ]);
   });
 
   test('every tool has a title and read-only/destructive annotations', () => {
@@ -109,7 +115,8 @@ describe('mcp tool registry', () => {
     expect(url).toBe('https://api.poof.bg/v1/remove');
     expect(init.method).toBe('POST');
     const form = init.body as FormData;
-    expect(form.get('image_file')).toBeInstanceOf(Blob);
+    expect(form.get('file')).toBeInstanceOf(Blob);
+    expect(form.get('image_file')).toBeNull();
     expect(form.get('format')).toBe('webp');
     expect(form.get('width')).toBe('300');
     expect(form.get('height')).toBe('200');
@@ -130,6 +137,111 @@ describe('mcp tool registry', () => {
 
     const result = await callTool('get_account', {}, CTX);
     expect(result.data).toEqual({ plan: 'Pro', maxCredits: 1000, usedCredits: 250, remainingCredits: 750 });
+  });
+
+  test('remove_video_background sends the url and options, then polls until the job completes', async () => {
+    jobPollConfig.intervalMs = 0;
+    const calls: Array<{ url: string; method: string; body?: FormData }> = [];
+    fetchMock.mockImplementation(async (url: string, init: any) => {
+      calls.push({ url, method: init.method, body: init.body });
+      if (init.method === 'POST') {
+        return { ok: true, status: 202, json: async () => ({ id: 'job_1', status: 'queued', progress: 0 }) };
+      }
+      return {
+        ok: true,
+        status: 200,
+        json: async () =>
+          calls.length < 3
+            ? { id: 'job_1', status: 'processing', progress: 0.5 }
+            : { id: 'job_1', status: 'completed', progress: 1, credits: 35, result_url: 'https://cdn.poof.bg/1d/jobs/job_1/result.webm' },
+      };
+    });
+
+    const result = await callTool(
+      'remove_video_background',
+      { video_url: VIDEO_URL, format: 'mp4', channels: 'rgb', bg_color: '#00ff00', size: 'hd' },
+      CTX
+    );
+
+    expect(calls[0].url).toBe('https://api.poof.bg/v1/remove');
+    const body = calls[0].body as FormData;
+    expect(body.get('url')).toBe(VIDEO_URL);
+    expect(body.get('file')).toBeNull();
+    expect(body.get('format')).toBe('mp4');
+    expect(body.get('channels')).toBe('rgb');
+    expect(body.get('bg_color')).toBe('#00ff00');
+    expect(body.get('size')).toBe('hd');
+    expect(calls.slice(1).every((c) => c.url === 'https://api.poof.bg/v1/jobs/job_1' && c.method === 'GET')).toBe(true);
+    expect(result.success).toBe(true);
+    expect(result.job.status).toBe('completed');
+    expect(result.job.result_url).toBe('https://cdn.poof.bg/1d/jobs/job_1/result.webm');
+    expect(result.hint).toBeUndefined();
+  });
+
+  test('remove_video_background with wait=false returns the queued job and a get_job hint', async () => {
+    fetchMock.mockImplementationOnce(async () => ({
+      ok: true,
+      status: 202,
+      json: async () => ({ id: 'job_2', status: 'queued', progress: 0, result_url: null }),
+    }));
+
+    const result = await callTool('remove_video_background', { video_url: VIDEO_URL, wait: false }, CTX);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(result.success).toBe(true);
+    expect(result.job.status).toBe('queued');
+    expect(result.hint).toContain('get_job');
+    expect(result.hint).toContain('job_2');
+  });
+
+  test('remove_video_background hands a failed job back with success=false', async () => {
+    jobPollConfig.intervalMs = 0;
+    fetchMock
+      .mockImplementationOnce(async () => ({
+        ok: true,
+        status: 202,
+        json: async () => ({ id: 'job_3', status: 'queued', progress: 0 }),
+      }))
+      .mockImplementationOnce(async () => ({
+        ok: true,
+        status: 200,
+        json: async () => ({ id: 'job_3', status: 'failed', error: { code: 'processing_failed', message: 'boom' } }),
+      }));
+
+    const result = await callTool('remove_video_background', { video_url: VIDEO_URL }, CTX);
+    expect(result.success).toBe(false);
+    expect(result.job.error.code).toBe('processing_failed');
+    expect(result.hint).toBeUndefined();
+  });
+
+  test('remove_video_background rejects a non-https url without calling the API', async () => {
+    await expect(callTool('remove_video_background', { video_url: 'http://example.com/a.mp4' }, CTX)).rejects.toThrow(
+      'https://'
+    );
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  test('remove_video_background rejects an image response (200 instead of 202)', async () => {
+    fetchMock.mockImplementationOnce(async () => ({ ok: true, status: 200, json: async () => ({}) }));
+    await expect(callTool('remove_video_background', { video_url: VIDEO_URL }, CTX)).rejects.toThrow('202');
+  });
+
+  test('get_job fetches the job by id', async () => {
+    fetchMock.mockImplementationOnce(async (url: string, init: any) => {
+      expect(url).toBe('https://api.poof.bg/v1/jobs/job_9');
+      expect(init.method).toBe('GET');
+      expect(init.headers['x-api-key']).toBe(API_KEY);
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({ id: 'job_9', status: 'completed', result_url: 'https://cdn.poof.bg/1d/jobs/job_9/result.webm' }),
+      };
+    });
+
+    const result = await callTool('get_job', { job_id: 'job_9' }, CTX);
+    expect(result).toEqual({
+      success: true,
+      job: { id: 'job_9', status: 'completed', result_url: 'https://cdn.poof.bg/1d/jobs/job_9/result.webm' },
+    });
   });
 
   test('unknown tool throws', async () => {
@@ -327,6 +439,34 @@ describe('CallTool over the MCP protocol', () => {
       'Poof request failed: Missing required argument "image" for remove_background'
     );
     expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  test('a missing video job is a tool error result with a hint', async () => {
+    fetchMock.mockImplementation(async () => apiError(404, 'job_not_found', 'No job with id job_x.'));
+
+    const result: any = await client.callTool({ name: 'get_job', arguments: { job_id: 'job_x' } });
+
+    expect(result.isError).toBe(true);
+    const text = result.content[0].text;
+    expect(text).toContain('Poof API error (HTTP 404 job_not_found)');
+    expect(text).toContain('Do not retry; start a new remove_video_background job');
+  });
+
+  test('a finished video job comes back as text content with its result_url', async () => {
+    fetchMock.mockImplementation(async () => ({
+      ok: true,
+      status: 200,
+      json: async () => ({ id: 'job_7', status: 'completed', result_url: 'https://cdn.poof.bg/1d/jobs/job_7/result.webm' }),
+    }));
+
+    const result: any = await client.callTool({ name: 'get_job', arguments: { job_id: 'job_7' } });
+
+    expect(result.isError).toBeFalsy();
+    expect(result.content).toHaveLength(1);
+    expect(JSON.parse(result.content[0].text)).toEqual({
+      success: true,
+      job: { id: 'job_7', status: 'completed', result_url: 'https://cdn.poof.bg/1d/jobs/job_7/result.webm' },
+    });
   });
 
   test('an unknown tool is still a protocol error', async () => {
