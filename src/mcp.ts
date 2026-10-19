@@ -2,10 +2,44 @@ import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import {
   ListToolsRequestSchema,
   CallToolRequestSchema,
+  ErrorCode,
+  McpError,
 } from '@modelcontextprotocol/sdk/types.js';
 import { z } from 'zod';
 
+import { sanitizeClientName } from './client.js';
+import { VERSION } from './version.js';
+
 const API_BASE_URL = 'https://api.poof.bg/v1';
+
+// A non-2xx response from the Poof API. Carries the HTTP status and the API's
+// `{ code, message, details, request_id, doc_url }` body (when it parses) so the
+// failure can be reported to the model as a readable tool result.
+export class PoofApiError extends Error {
+  status: number;
+  body: any;
+
+  constructor(status: number, body: any, rawText: string) {
+    super(rawText);
+    this.name = 'PoofApiError';
+    this.status = status;
+    this.body = body;
+  }
+}
+
+export type Transport = 'hosted' | 'stdio';
+
+// Per-request credentials and identity for calls to the Poof API.
+export type RequestContext = {
+  apiKey: string;
+  userAgent: string;
+};
+
+// The User-Agent tells the API's request logs which AI client and transport the
+// traffic came from, e.g. "poof-mcp/1.3.0 (Claude-ClaudeAI; hosted)".
+export function buildUserAgent(client: string, transport: Transport) {
+  return `poof-mcp/${VERSION} (${client}; ${transport})`;
+}
 
 // Helper to detect if string is a URL
 function isUrl(str: string): boolean {
@@ -31,7 +65,10 @@ async function getImageBuffer(
     // Fetch from URL
     const response = await fetch(image);
     if (!response.ok) {
-      throw new Error(`Failed to fetch image from URL: ${response.statusText}`);
+      throw new Error(
+        `Could not download the image from the URL (HTTP ${response.status} ${response.statusText}). ` +
+          'The URL must point directly to a publicly accessible PNG, JPEG or WebP image.'
+      );
     }
     const arrayBuffer = await response.arrayBuffer();
     const urlPath = new URL(image).pathname;
@@ -87,15 +124,16 @@ function buildUrl(path: string, args?: any): string {
 async function callPoofApi(
   path: string,
   args: any,
-  apiKey: string,
+  ctx: RequestContext,
   method: 'GET' | 'POST' = 'GET',
   formData?: FormData
 ): Promise<Response> {
-  console.error(`[MCP] Calling Poof API: ${method} ${path}`);
+  console.error(`[MCP] Calling Poof API: ${method} ${path}, UA: ${ctx.userAgent}`);
 
   const url = method === 'GET' ? buildUrl(path, args) : `${API_BASE_URL}${path}`;
   const headers: Record<string, string> = {
-    'x-api-key': apiKey,
+    'x-api-key': ctx.apiKey,
+    'User-Agent': ctx.userAgent,
   };
 
   let body: BodyInit | undefined;
@@ -108,40 +146,107 @@ async function callPoofApi(
     body = JSON.stringify(args);
   }
 
-  const res = await fetch(url, {
-    method,
-    headers,
-    body,
-  });
+  for (let attempt = 0; ; attempt++) {
+    const res = await fetch(url, {
+      method,
+      headers,
+      body,
+    });
 
-  if (!res.ok) {
+    if (res.ok) {
+      return res;
+    }
+
     const errorText = await res.text();
     console.error(`Poof API Error (${res.status}): ${errorText}`);
-    throw new Error(errorText);
-  }
+    let errorBody: any = null;
+    try {
+      errorBody = JSON.parse(errorText);
+    } catch {
+      // Non-JSON error body (e.g. an HTML error page) — keep the raw text.
+    }
+    const err = new PoofApiError(res.status, errorBody, errorText);
 
-  return res;
+    // Rate limits and an unavailable processing service clear quickly, so retry
+    // those here instead of handing the failure to the model. Failed requests
+    // are not billed. Used-up credits are not retried.
+    if (isRetryable(err) && attempt < retryConfig.maxRetries) {
+      await sleep(retryDelayMs(res, attempt));
+      continue;
+    }
+    throw err;
+  }
+}
+
+export const retryConfig = { maxRetries: 2, baseDelayMs: 2000, maxDelayMs: 10000 };
+
+// The API sends no Retry-After today; honour it if it ever does.
+function retryDelayMs(res: { headers?: Headers }, attempt: number) {
+  const retryAfter = Number(res.headers?.get?.('retry-after'));
+  const delay = retryAfter > 0
+    ? retryAfter * 1000
+    : retryConfig.baseDelayMs * 2 ** attempt * (1 + Math.random() * 0.5);
+  return Math.min(delay, retryConfig.maxDelayMs);
+}
+
+function sleep(ms: number) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function errorCode(err: PoofApiError): string | undefined {
+  return err.body?.code;
+}
+
+function isRateLimit(err: PoofApiError) {
+  return err.status === 429;
+}
+
+// upstream_error: the processing service is unreachable (502), temporarily
+// unavailable (503) or timed out (504). All three are safe to retry.
+function isUpstreamError(err: PoofApiError) {
+  return [502, 503, 504].includes(err.status);
+}
+
+function isRetryable(err: PoofApiError) {
+  return isRateLimit(err) || isUpstreamError(err);
+}
+
+function arrayBufferToBase64(buffer: ArrayBuffer): string {
+  const bytes = new Uint8Array(buffer);
+  let binaryString = '';
+  for (let i = 0; i < bytes.length; i++) {
+    binaryString += String.fromCharCode(bytes[i]);
+  }
+  return btoa(binaryString);
 }
 
 const toolRegistry = {
   remove_background: {
     schema: {
       name: 'remove_background',
+      title: 'Remove Image Background',
       description:
-        'Remove the background from an image. Returns the processed image as base64. Accepts URL or base64-encoded image. Can also resize the result to an exact width x height without stretching (width, height, fit).',
+        'Remove the background from an image, leaving the subject on a transparent (or solid color) background. Accepts an image URL or base64-encoded image (PNG, JPEG or WebP, up to 20 MB) and returns the processed image. Can also crop to the subject and resize the result to an exact width x height without stretching (width, height, fit). Costs 1 credit.',
+      annotations: {
+        title: 'Remove Image Background',
+        readOnlyHint: true,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: true,
+      },
       inputSchema: {
         type: 'object',
         properties: {
           image: {
             type: 'string',
             description:
-              'Image input: base64-encoded image data or a URL to an image',
+              'Image input: a publicly accessible URL to a PNG, JPEG or WebP image (including https://), or base64-encoded image data (optionally as a data: URL)',
           },
           format: {
             type: 'string',
             enum: ['png', 'jpg', 'webp'],
             default: 'png',
-            description: 'Output image format',
+            description: "Output image format. 'jpg' has no transparency",
           },
           channels: {
             type: 'string',
@@ -192,7 +297,7 @@ const toolRegistry = {
         required: ['image'],
       },
     },
-    handler: async (args: any, apiKey: string) => {
+    handler: async (args: any, ctx: RequestContext) => {
       const { buffer, filename } = await getImageBuffer(args.image);
 
       const formData = new FormData();
@@ -224,7 +329,7 @@ const toolRegistry = {
         formData.append('fit', args.fit);
       }
 
-      const response = await callPoofApi('/remove', {}, apiKey, 'POST', formData);
+      const response = await callPoofApi('/remove', {}, ctx, 'POST', formData);
 
       // Get response metadata
       const width = parseInt(response.headers.get('X-Image-Width') || '0', 10);
@@ -234,26 +339,14 @@ const toolRegistry = {
         10
       );
 
-      // Get image data
-      const imageArrayBuffer = await response.arrayBuffer();
-
-      // Convert to base64
       const format = args.format || 'png';
       const mimeType =
         format === 'jpg' ? 'image/jpeg' : format === 'webp' ? 'image/webp' : 'image/png';
-      
-      // Convert ArrayBuffer to base64
-      const bytes = new Uint8Array(imageArrayBuffer);
-      let binaryString = '';
-      for (let i = 0; i < bytes.length; i++) {
-        binaryString += String.fromCharCode(bytes[i]);
-      }
-      const base64 = btoa(binaryString);
-      const dataUrl = `data:${mimeType};base64,${base64}`;
 
       return {
+        image: { data: arrayBufferToBase64(await response.arrayBuffer()), mimeType },
         success: true,
-        data: dataUrl,
+        format,
         width,
         height,
         processing_time_ms: processingTime,
@@ -264,16 +357,24 @@ const toolRegistry = {
   get_account: {
     schema: {
       name: 'get_account',
+      title: 'Get Poof Account',
       description:
-        'Get account information including plan details and credit usage',
+        "Get the Poof account's plan and credit usage: maxCredits, usedCredits and remainingCredits for the current billing cycle. Free; use it to check whether there are credits left before processing many images.",
+      annotations: {
+        title: 'Get Poof Account',
+        readOnlyHint: true,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: false,
+      },
       inputSchema: {
         type: 'object',
         properties: {},
         required: [],
       },
     },
-    handler: async (_args: any, apiKey: string) => {
-      const response = await callPoofApi('/me', {}, apiKey, 'GET');
+    handler: async (_args: any, ctx: RequestContext) => {
+      const response = await callPoofApi('/me', {}, ctx, 'GET');
       const data = await response.json() as Record<string, any>;
 
       return {
@@ -291,12 +392,121 @@ export function listTools() {
   return Object.values(toolRegistry).map((t) => t.schema);
 }
 
-export async function callTool(name: string, args: any, apiKey: string) {
+export async function callTool(name: string, args: any, ctx: RequestContext) {
   const tool = (toolRegistry as any)[name];
-  if (!tool) {
+  if (!Object.prototype.hasOwnProperty.call(toolRegistry, name)) {
     throw new Error(`Unknown tool: ${name}`);
   }
-  return tool.handler(args, apiKey);
+  for (const field of tool.schema.inputSchema.required) {
+    if (args?.[field] === undefined || args?.[field] === null || args?.[field] === '') {
+      throw new Error(`Missing required argument "${field}" for ${name}`);
+    }
+  }
+  return tool.handler(args, ctx);
+}
+
+/**
+ * Turn a tool's return value into MCP content. A processed image goes out as an
+ * image content block, which clients show and models can look at, with the
+ * rest of the result as JSON text. Base64 image data inside the JSON text would
+ * only fill the model's context.
+ */
+export function toolResultContent(result: any) {
+  if (result && typeof result === 'object' && result.image?.data) {
+    const { image, ...rest } = result;
+    return [
+      { type: 'image' as const, data: image.data as string, mimeType: image.mimeType as string },
+      { type: 'text' as const, text: JSON.stringify(rest) },
+    ];
+  }
+  return [{ type: 'text' as const, text: JSON.stringify(result) }];
+}
+
+/**
+ * Turn a failed tool call into a tool result with `isError: true`.
+ *
+ * MCP distinguishes protocol errors (malformed request, unknown tool) from tool
+ * execution errors. Throwing from a CallTool handler on the low-level `Server`
+ * produces a JSON-RPC error, which clients count as a failed request and the
+ * model cannot read. API failures (invalid image, credits used up, rate limited)
+ * are tool execution errors: return them as content so the model can react.
+ */
+export function toolErrorResult(err: unknown) {
+  let text: string;
+
+  if (err instanceof PoofApiError) {
+    const body = err.body;
+    const code = body?.code ? ` ${body.code}` : '';
+    const details =
+      body?.details && typeof body.details === 'object'
+        ? JSON.stringify(body.details)
+        : body?.details;
+    const parts = [body?.message, details].filter(Boolean);
+    const summary = parts.length ? parts.join(': ') : err.message || 'Request failed';
+    text = `Poof API error (HTTP ${err.status}${code}): ${summary}`;
+    const hint = errorHint(err);
+    if (hint) {
+      text += `\n${hint}`;
+    }
+    if (body?.doc_url) {
+      text += `\nDocumentation: ${body.doc_url}`;
+    }
+    if (body?.request_id) {
+      text += `\nRequest ID: ${body.request_id}`;
+    }
+  } else {
+    const message = err instanceof Error ? err.message : String(err);
+    text = `Poof request failed: ${message}`;
+  }
+
+  return {
+    content: [{ type: 'text' as const, text }],
+    isError: true,
+  };
+}
+
+// Tell the model whether retrying can help, so agents working through a list of
+// images stop on terminal errors instead of repeating them.
+function errorHint(err: PoofApiError): string | undefined {
+  const code = errorCode(err);
+  if (err.status === 402 || code === 'payment_required') {
+    return (
+      "The Poof account's monthly credits are used up. Do not retry, and do not process " +
+      'other images: they will fail the same way. Tell the user to top up, enable Auto ' +
+      'Recharge or upgrade at https://dash.poof.bg, or wait for the next billing cycle.'
+    );
+  }
+  if (isRateLimit(err)) {
+    return (
+      "The plan's per-minute rate limit was exceeded (already retried). Process images one " +
+      'at a time, not in parallel, and wait about 15 seconds before retrying.'
+    );
+  }
+  if (isUpstreamError(err)) {
+    return 'The processing service is temporarily unavailable (already retried). Wait a minute before retrying.';
+  }
+  if (err.status === 401) {
+    return 'The Poof API key is invalid. Do not retry; the user needs to reconnect Poof or fix the key.';
+  }
+  if (err.status === 403) {
+    return (
+      "This feature is not available on the user's Poof plan. Do not retry; tell the user " +
+      'it requires an upgrade at https://dash.poof.bg.'
+    );
+  }
+  if (code === 'image_too_large' || err.status === 413) {
+    return 'The image is larger than 20 MB. Do not retry the same image; use a smaller or compressed one.';
+  }
+  if (code === 'invalid_image' || err.status === 422) {
+    return 'Only PNG, JPEG and WebP images are supported. Do not retry the same image.';
+  }
+  if (code === 'validation_error') {
+    return 'A parameter value was rejected. Fix the parameter named in the error before retrying.';
+  }
+  if (code === 'processing_failed') {
+    return 'Processing failed for this image. Do not retry it unchanged; try a different image or format.';
+  }
+  return undefined;
 }
 
 export const configSchema = z.object({
@@ -304,9 +514,16 @@ export const configSchema = z.object({
   debug: z.boolean().optional(),
 });
 
-export function createMcpServer(config: { poofApiKey: string; debug?: boolean }) {
+export function createMcpServer(config: {
+  poofApiKey: string;
+  debug?: boolean;
+  // AI client making the requests (see detectClient). When unset, the name the
+  // client sent in its MCP initialize request is used.
+  client?: string;
+  transport?: Transport;
+}) {
   const server = new Server(
-    { name: 'poof', version: '1.1.0' },
+    { name: 'poof', version: VERSION },
     { capabilities: { tools: {} } }
   );
 
@@ -315,20 +532,27 @@ export function createMcpServer(config: { poofApiKey: string; debug?: boolean })
   }));
 
   server.setRequestHandler(CallToolRequestSchema, async (req) => {
-    const result = await callTool(
-      req.params.name,
-      req.params.arguments,
-      config.poofApiKey
-    );
+    const name = req.params.name;
+    if (!Object.prototype.hasOwnProperty.call(toolRegistry, name)) {
+      // Unknown tool is a protocol error per the MCP spec.
+      throw new McpError(ErrorCode.InvalidParams, `Unknown tool: ${name}`);
+    }
 
-    return {
-      content: [
-        {
-          type: 'text',
-          text: JSON.stringify(result),
-        },
-      ],
+    const client =
+      config.client ?? sanitizeClientName(server.getClientVersion()?.name) ?? 'unknown';
+    const ctx: RequestContext = {
+      apiKey: config.poofApiKey,
+      userAgent: buildUserAgent(client, config.transport ?? 'stdio'),
     };
+
+    let result;
+    try {
+      result = await callTool(name, req.params.arguments ?? {}, ctx);
+    } catch (err) {
+      return toolErrorResult(err);
+    }
+
+    return { content: toolResultContent(result) };
   });
 
   return { server };

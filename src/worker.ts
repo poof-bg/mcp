@@ -6,9 +6,140 @@ import type { Server } from '@modelcontextprotocol/sdk/server/index.js';
 
 import { createMcpServer } from './mcp.js';
 import { authHandler } from './auth-handler.js';
+import { resolveClient } from './client.js';
 
-// Handle MCP requests with a direct API key (legacy / backward-compatible)
-async function handleMcpWithApiKey(request: Request, apiKey: string): Promise<Response> {
+const RESOURCE_METADATA_URL = 'https://api.poof.bg/.well-known/oauth-protected-resource';
+
+// The audience of every token the provider issues. Clients' own `resource`
+// values are stripped (see below), so tokens always get this one. Grants and
+// tokens written by 0.1.0 have no resource and are bound to it on their next
+// refresh.
+const RESOURCE = 'https://api.poof.bg';
+
+const DAY = 24 * 60 * 60;
+
+// A connection lasts as long as it is used: every refresh moves the grant's
+// expiry to 30 days ahead, so only a client idle for 30 days has to log in
+// again. There is no absolute cap. The first lifetime, from the code exchange,
+// is the same 30 days.
+const REFRESH_TOKEN_IDLE_TTL = 30 * DAY;
+
+// Discovery documents are static and clients fetch them on every connect, so
+// let clients and caches keep them for an hour.
+const METADATA_CACHE_CONTROL = 'public, max-age=3600';
+
+// ChatGPT app directory domain verification. The verifier drops the MCP URL's
+// path and fetches this from the origin root. The token is public by design;
+// set it as the OPENAI_APPS_CHALLENGE_TOKEN var once OpenAI issues it.
+const OPENAI_APPS_CHALLENGE_PATH = '/.well-known/openai-apps-challenge';
+
+// OAuth Protected Resource Metadata (RFC 9728), keyed by well-known path.
+// Path-aware clients (the MCP SDK, Cursor, Codex) first try the URL with the
+// resource path appended. RFC 9728 §3.3 requires `resource` to equal the
+// identifier the URL was built from, so the /mcp variant names /mcp. The value
+// never reaches a token audience: `resource` is stripped before the grant and
+// the token exchange (see below and auth-handler.ts).
+const PROTECTED_RESOURCES: Record<string, string> = {
+  '/.well-known/oauth-protected-resource': 'https://api.poof.bg',
+  '/.well-known/oauth-protected-resource/mcp': 'https://api.poof.bg/mcp',
+};
+
+// Path-suffixed variant of the authorization server metadata (RFC 8414 §3.1),
+// served with the same document as the root URL.
+const AUTHORIZATION_SERVER_METADATA_PATHS = new Set([
+  '/.well-known/oauth-authorization-server',
+  '/.well-known/oauth-authorization-server/mcp',
+]);
+
+function withHeaders(response: Response, headers: Record<string, string>): Response {
+  const result = new Response(response.body, response);
+  for (const [name, value] of Object.entries(headers)) {
+    result.headers.set(name, value);
+  }
+  return result;
+}
+
+// A rejected /mcp request tells the client it is the token that is bad
+// (RFC 6750 §3.1) and where to re-authorize (RFC 9728 §5.1)
+function invalidTokenResponse(description: string, headers: HeadersInit = {}): Response {
+  const result = new Headers(headers);
+  result.set('Content-Type', 'application/json');
+  result.set(
+    'WWW-Authenticate',
+    `Bearer realm="OAuth", error="invalid_token", error_description="${description}", resource_metadata="${RESOURCE_METADATA_URL}"`,
+  );
+  return new Response(JSON.stringify({ error: 'invalid_token', error_description: description }), {
+    status: 401,
+    headers: result,
+  });
+}
+
+function daysSince(seconds: number, now: number): number {
+  return Math.round(((now - seconds) / DAY) * 10) / 10;
+}
+
+// The client_id of a token request: in the body for public clients, or the
+// username of HTTP Basic auth for confidential ones
+function tokenRequestClientId(request: Request, params: URLSearchParams): string | null {
+  const authorization = request.headers.get('authorization');
+  if (authorization?.startsWith('Basic ')) {
+    try {
+      return decodeURIComponent(atob(authorization.slice(6)).split(':')[0]);
+    } catch {
+      return null;
+    }
+  }
+  return params.get('client_id');
+}
+
+// Structured log line for a failed /oauth/token request, to tell expired
+// grants from refresh-token reuse. Codes and refresh tokens have the form
+// `<userId>:<grantId>:<secret>`; only the grant is looked up, nothing secret
+// or user-identifying is logged.
+async function logTokenError(
+  env: any,
+  request: Request,
+  params: URLSearchParams,
+  response: Response,
+): Promise<void> {
+  const now = Math.floor(Date.now() / 1000);
+  const grantType = params.get('grant_type');
+  const clientId = tokenRequestClientId(request, params);
+  const { error, error_description: description } = (await response
+    .clone()
+    .json()
+    .catch(() => ({}))) as { error?: string; error_description?: string };
+
+  const client = clientId
+    ? ((await env.OAUTH_KV.get(`client:${clientId}`, { type: 'json' }).catch(() => null)) as any)
+    : null;
+
+  const credential = grantType === 'refresh_token' ? params.get('refresh_token') : params.get('code');
+  const [userId, grantId] = credential?.split(':') ?? [];
+  const grant =
+    userId && grantId
+      ? ((await env.OAUTH_KV.get(`grant:${userId}:${grantId}`, { type: 'json' }).catch(() => null)) as any)
+      : null;
+
+  console.warn('[OAuth Token Error]', JSON.stringify({
+    status: response.status,
+    error,
+    description,
+    grantType,
+    clientId,
+    clientName: client?.clientName ?? null,
+    clientAgeDays: client?.registrationDate ? daysSince(client.registrationDate, now) : null,
+    userAgent: request.headers.get('user-agent'),
+    grantExists: grantId ? Boolean(grant) : null,
+    grantAgeDays: grant?.createdAt ? daysSince(grant.createdAt, now) : null,
+    grantExpiresInDays: grant?.expiresAt ? -daysSince(grant.expiresAt, now) : null,
+    grantRefreshed: grant ? Boolean(grant.previousRefreshTokenId) : null,
+  }));
+}
+
+// Handle MCP requests with a direct API key (legacy / backward-compatible).
+// `clientName` is the OAuth client's registered name, when known.
+async function handleMcpWithApiKey(request: Request, apiKey: string, clientName?: string): Promise<Response> {
   if (request.method !== 'POST') {
     return new Response(
       JSON.stringify({
@@ -34,7 +165,11 @@ async function handleMcpWithApiKey(request: Request, apiKey: string): Promise<Re
       enableJsonResponse: true,
     });
 
-    const result = createMcpServer({ poofApiKey: apiKey });
+    const result = createMcpServer({
+      poofApiKey: apiKey,
+      client: resolveClient(request.headers, clientName),
+      transport: 'hosted',
+    });
     server = result.server;
 
     await server.connect(transport);
@@ -63,12 +198,19 @@ const mcpHandler = {
 
     if (!apiKey) {
       return new Response(
-        JSON.stringify({ error: 'No API key in OAuth context' }),
-        { status: 401, headers: { 'Content-Type': 'application/json' } },
+        JSON.stringify({ error: 'invalid_token', error_description: 'No API key in OAuth context' }),
+        {
+          status: 401,
+          headers: {
+            'Content-Type': 'application/json',
+            'WWW-Authenticate': `Bearer error="invalid_token", resource_metadata="${RESOURCE_METADATA_URL}"`,
+          },
+        },
       );
     }
 
-    return handleMcpWithApiKey(request, apiKey);
+    // Grants issued before clientName was stored rely on header detection alone.
+    return handleMcpWithApiKey(request, apiKey, props.clientName);
   },
 };
 
@@ -80,6 +222,14 @@ export default {
     if (url.pathname === '/' && request.method === 'GET') {
       return new Response('Poof MCP Worker is running.', {
         status: 200,
+        headers: { 'Content-Type': 'text/plain' },
+      });
+    }
+
+    if (url.pathname === OPENAI_APPS_CHALLENGE_PATH) {
+      const token = env.OPENAI_APPS_CHALLENGE_TOKEN;
+      return new Response(token || 'Not Found', {
+        status: token ? 200 : 404,
         headers: { 'Content-Type': 'text/plain' },
       });
     }
@@ -100,10 +250,11 @@ export default {
     }
 
     // Serve OAuth Protected Resource Metadata (RFC 9728)
-    if (url.pathname === '/.well-known/oauth-protected-resource') {
+    const protectedResource = PROTECTED_RESOURCES[url.pathname];
+    if (protectedResource) {
       return new Response(
         JSON.stringify({
-          resource: 'https://api.poof.bg',
+          resource: protectedResource,
           authorization_servers: ['https://api.poof.bg'],
           scopes_supported: ['mcp'],
           bearer_methods_supported: ['header'],
@@ -112,6 +263,27 @@ export default {
           headers: {
             'Content-Type': 'application/json',
             'Access-Control-Allow-Origin': '*',
+            'Cache-Control': METADATA_CACHE_CONTROL,
+          },
+        },
+      );
+    }
+
+    // This is a plain OAuth 2.0 server, not an OpenID provider: it issues no ID
+    // tokens and has no JWKS, so an OIDC discovery document would be invalid.
+    // A 404 tells clients to move on to the RFC 8414 document.
+    if (url.pathname === '/.well-known/openid-configuration') {
+      return new Response(
+        JSON.stringify({
+          error: 'not_found',
+          error_description: 'Not an OpenID provider; see /.well-known/oauth-authorization-server',
+        }),
+        {
+          status: 404,
+          headers: {
+            'Content-Type': 'application/json',
+            'Access-Control-Allow-Origin': '*',
+            'Cache-Control': METADATA_CACHE_CONTROL,
           },
         },
       );
@@ -120,21 +292,38 @@ export default {
     // Log all requests for debugging
     console.log(`[OAuth] ${request.method} ${url.pathname} (auth: ${request.headers.has('authorization') ? 'Bearer' : 'none'})`);
 
-    // Strip `resource` parameter from token exchange requests.
-    // Claude sends resource=https://api.poof.bg/ (trailing slash) which gets stored
-    // as the token audience. The library then validates tokens against protocol://host
-    // (no trailing slash) using strict equality, causing every MCP request to fail with
-    // "Token audience does not match resource server". Removing `resource` from both
-    // the grant (auth-handler) and the token exchange body prevents audience from being set.
+    // Strip the `resource` parameter from authorization and token requests.
+    // Clients send whichever resource their discovery found: Claude sends
+    // https://api.poof.bg/ (root metadata), path-aware clients send
+    // https://api.poof.bg/mcp. The provider compares it with RESOURCE
+    // exactly and would refuse one or the other with invalid_target. Without
+    // it, the provider uses RESOURCE, which is also what every existing grant
+    // inherits. Reading the body consumes it, so the provider always gets a
+    // rebuilt token request.
     let processedRequest = request;
+    let tokenParams: URLSearchParams | null = null;
+    if (url.pathname === '/oauth/authorize' && url.searchParams.has('resource')) {
+      const authorizeUrl = new URL(url);
+      authorizeUrl.searchParams.delete('resource');
+      processedRequest = new Request(authorizeUrl, request);
+    }
     if (url.pathname === '/oauth/token' && request.method === 'POST') {
-      const body = await request.text();
-      const params = new URLSearchParams(body);
-      if (params.has('resource')) {
-        console.log(`[OAuth] Stripping resource param from token exchange: ${params.get('resource')}`);
-        params.delete('resource');
-        processedRequest = new Request(request, { body: params.toString() });
+      let body = await request.text();
+      tokenParams = new URLSearchParams(body);
+      if (tokenParams.has('resource')) {
+        console.log(`[OAuth] Stripping resource param from token exchange: ${tokenParams.get('resource')}`);
+        tokenParams.delete('resource');
+        body = tokenParams.toString();
       }
+      processedRequest = new Request(request, { body });
+    }
+
+    // The provider only answers the root metadata URL
+    if (AUTHORIZATION_SERVER_METADATA_PATHS.has(url.pathname)) {
+      processedRequest = new Request(
+        new URL('/.well-known/oauth-authorization-server', url),
+        request,
+      );
     }
 
     // OAuth flow for everything else
@@ -146,25 +335,52 @@ export default {
       tokenEndpoint: '/oauth/token',
       clientRegistrationEndpoint: '/oauth/register',
       scopesSupported: ['mcp'],
+      resourceMetadata: { resource: RESOURCE },
       accessTokenTTL: 3600,       // 1 hour
-      refreshTokenTTL: 2592000,   // 30 days
-      onError({ code, description, status, headers }) {
-        console.log(`[OAuth Error] status=${status} code=${code} desc=${description}`);
-        // Add resource_metadata to WWW-Authenticate header on 401 (RFC 9728)
-        if (status === 401) {
-          const newHeaders = { ...headers };
-          newHeaders['WWW-Authenticate'] =
-            `Bearer resource_metadata="https://api.poof.bg/.well-known/oauth-protected-resource"`;
-          return new Response(JSON.stringify({ error: code, error_description: description }), {
-            status,
-            headers: { ...newHeaders, 'Content-Type': 'application/json' },
-          });
+      refreshTokenTTL: REFRESH_TOKEN_IDLE_TTL,
+      refreshTokenIdleTTL: REFRESH_TOKEN_IDLE_TTL,
+      // 0.1.0 accepted any non-dangerous redirect scheme, and desktop clients
+      // registered custom ones (cursor://…). Keep them working; remote http is
+      // refused regardless.
+      allowPrivateUseRedirectUris: true,
+      onError({ code, description, status, headers, internal }) {
+        console.log(`[OAuth Error] status=${status} code=${code} desc=${description} reason=${internal?.category}/${internal?.reason}`);
+        if (status === 401 && url.pathname.startsWith('/mcp')) {
+          return invalidTokenResponse(description, headers);
         }
       },
     });
 
-    const response = await provider.fetch(processedRequest, env, ctx);
+    let response = await provider.fetch(processedRequest, env, ctx);
     console.log(`[OAuth Response] ${url.pathname} -> ${response.status}`);
+
+    // A request without a token gets a bare challenge without calling onError;
+    // answer it like 0.1.0 did, with invalid_token
+    if (
+      url.pathname.startsWith('/mcp') &&
+      response.status === 401 &&
+      !response.headers.get('www-authenticate')?.includes('error=')
+    ) {
+      response = invalidTokenResponse('Missing or invalid access token', response.headers);
+    }
+
+    if (tokenParams && response.status >= 400) {
+      await logTokenError(env, request, tokenParams, response);
+    }
+
+    if (AUTHORIZATION_SERVER_METADATA_PATHS.has(url.pathname) && response.ok) {
+      response = withHeaders(response, { 'Cache-Control': METADATA_CACHE_CONTROL, Vary: 'Origin' });
+    }
+
+    // The provider echoes the token's audience as `resource`. Clients never get
+    // the resource they asked for (it is stripped above), so don't send one
+    // that may not match what they asked for; 0.1.0 sent none.
+    if (tokenParams && response.ok) {
+      const tokens = (await response.json()) as Record<string, unknown>;
+      delete tokens.resource;
+      response = new Response(JSON.stringify(tokens), response);
+    }
+
     return response;
   },
 };
