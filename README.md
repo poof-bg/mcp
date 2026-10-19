@@ -29,7 +29,10 @@ npm run build
 
 ### Remote (HTTP transport via Cloudflare Worker)
 
-The Poof MCP server can be deployed as a Cloudflare Worker, allowing remote access via HTTP.
+The same tools are served over Streamable HTTP at `https://api.poof.bg/mcp`, with
+OAuth 2.1 (sign in with your Poof account) or an `x-api-key` header. An OAuth
+connection stays alive while it is used and expires after 30 days without use;
+then the client asks you to log in again (in Codex, run `codex mcp login poof`).
 
 ## Configuration
 
@@ -328,6 +331,13 @@ Remove the background and add a white background instead
 Remove the background and give me a 500x500 image with the product centred
 ```
 
+**Response:** the processed image as an MCP `image` content block (so the
+assistant can show and look at it), followed by a text block with the metadata:
+
+```json
+{ "success": true, "format": "png", "width": 1024, "height": 768, "processing_time_ms": 412 }
+```
+
 ### get_account
 
 Get your account information and credit balance.
@@ -356,9 +366,24 @@ How many credits do I have left?
 }
 ```
 
+### Errors
+
+A failed call is returned as a tool result with `isError: true` and a readable
+message (HTTP status, error code, details, documentation link and request ID),
+so the assistant can see what went wrong. Messages say whether retrying can help:
+used-up credits, an invalid API key or an unsupported image say not to retry.
+Rate limits (429) and temporary processing errors (502/503/504) are retried
+twice with backoff before they are reported.
+
 ---
 
 ## Development
+
+Requests to the Poof API send a `User-Agent` of the form
+`poof-mcp/<version> (<client>; <transport>)`, e.g. `poof-mcp/1.3.0 (Claude-ClaudeAI; hosted)`,
+so usage can be attributed to the AI client that made it.
+
+Release with `npm version <patch|minor|major>`, which also updates `src/version.ts`.
 
 ```bash
 # Install dependencies
@@ -372,6 +397,9 @@ npm run dev
 
 # Run locally (stdio mode)
 POOF_API_KEY=your_key npm start
+
+# Test
+npm test
 
 # Lint
 npm run lint
@@ -407,6 +435,13 @@ Also set the dashboard URL variable:
 
 ```bash
 wrangler secret put DASHBOARD_URL
+```
+
+For the ChatGPT app directory, set the domain verification token OpenAI issues as
+`OPENAI_APPS_CHALLENGE_TOKEN` (served at `/.well-known/openai-apps-challenge`):
+
+```bash
+wrangler secret put OPENAI_APPS_CHALLENGE_TOKEN
 ```
 
 You'll also need to create a KV namespace for OAuth state storage and update the IDs in `wrangler.toml`:
