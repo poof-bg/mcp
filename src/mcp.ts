@@ -397,14 +397,14 @@ const toolRegistry = {
           video_url: {
             type: 'string',
             description:
-              'Public https URL of the video (mp4, mov, webm or mkv; up to 500 MB and 5 minutes)',
+              'Public https URL of the video (mp4, mov, webm, mkv or animated gif; up to 500 MB and 5 minutes)',
           },
           format: {
             type: 'string',
-            enum: ['webm', 'mov', 'mp4'],
+            enum: ['webm', 'mov', 'mp4', 'gif'],
             default: 'webm',
             description:
-              "Output container. 'webm' (VP9) and 'mov' (ProRes 4444) keep transparency; 'mp4' (H.264) has no alpha and is composited onto bg_color",
+              "Output container. 'webm' (VP9) and 'mov' (ProRes 4444) keep transparency; 'mp4' (H.264) has no alpha and is composited onto bg_color; 'gif' is a looping GIF with 1-bit transparency and no audio (large files, soft edges are hard-cut) for stickers, chat and email: prefer size 'medium' with it",
           },
           channels: {
             type: 'string',
@@ -660,7 +660,7 @@ function errorHint(err: PoofApiError): string | undefined {
     return 'The video is longer than 5 minutes. Do not retry it unchanged; trim it or split it into shorter clips.';
   }
   if (code === 'invalid_video') {
-    return 'The file could not be read as a video (mp4, mov, webm or mkv). Do not retry the same URL.';
+    return 'The file could not be read as a video (mp4, mov, webm, mkv or animated gif). Do not retry the same URL.';
   }
   if (code === 'job_not_found' || (err.status === 404 && code !== 'processing_failed')) {
     return 'No job with this id exists (jobs are deleted 24 hours after completion). Do not retry; start a new remove_video_background job.';

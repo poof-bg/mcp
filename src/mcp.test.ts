@@ -178,6 +178,31 @@ describe('mcp tool registry', () => {
     expect(result.hint).toBeUndefined();
   });
 
+  test('remove_video_background forwards format=gif', async () => {
+    jobPollConfig.intervalMs = 0;
+    const calls: Array<{ url: string; method: string; body?: FormData }> = [];
+    fetchMock.mockImplementation(async (url: string, init: any) => {
+      calls.push({ url, method: init.method, body: init.body });
+      if (init.method === 'POST') {
+        return { ok: true, status: 202, json: async () => ({ id: 'job_2', status: 'queued', progress: 0, format: 'gif' }) };
+      }
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({ id: 'job_2', status: 'completed', progress: 1, credits: 20, format: 'gif', result_url: 'https://cdn.poof.bg/1d/jobs/job_2/result.gif' }),
+      };
+    });
+
+    const result = await callTool('remove_video_background', { video_url: VIDEO_URL, format: 'gif', size: 'medium' }, CTX);
+
+    const body = calls[0].body as FormData;
+    expect(body.get('format')).toBe('gif');
+    expect(body.get('size')).toBe('medium');
+    expect(result.success).toBe(true);
+    expect(result.job.format).toBe('gif');
+    expect(result.job.result_url).toBe('https://cdn.poof.bg/1d/jobs/job_2/result.gif');
+  });
+
   test('remove_video_background with wait=false returns the queued job and a get_job hint', async () => {
     fetchMock.mockImplementationOnce(async () => ({
       ok: true,
