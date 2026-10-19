@@ -36,7 +36,7 @@ export type RequestContext = {
 };
 
 // The User-Agent tells the API's request logs which AI client and transport the
-// traffic came from, e.g. "poof-mcp/1.3.0 (Claude-ClaudeAI; hosted)".
+// traffic came from, e.g. "poof-mcp/1.4.0 (Claude-ClaudeAI; hosted)".
 export function buildUserAgent(client: string, transport: Transport) {
   return `poof-mcp/${VERSION} (${client}; ${transport})`;
 }
@@ -220,6 +220,30 @@ function arrayBufferToBase64(buffer: ArrayBuffer): string {
   return btoa(binaryString);
 }
 
+
+// Video jobs: how often remove_video_background polls while waiting, and for how
+// long before it hands the job back to the model (exported so tests can shorten it).
+export const jobPollConfig = { intervalMs: 3000, maxWaitMs: 50000 };
+
+
+async function fetchJob(jobId: string, ctx: RequestContext): Promise<Record<string, any>> {
+  const response = await callPoofApi(`/jobs/${encodeURIComponent(jobId)}`, {}, ctx, 'GET');
+  return (await response.json()) as Record<string, any>;
+}
+
+function jobResult(job: Record<string, any>) {
+  const done = job.status === 'completed' || job.status === 'failed';
+  return {
+    success: job.status !== 'failed',
+    job,
+    ...(done
+      ? {}
+      : {
+          hint: `The video is still ${job.status}. Call get_job with job_id "${job.id}" to check again; result_url is set once the status is completed.`,
+        }),
+  };
+}
+
 const toolRegistry = {
   remove_background: {
     schema: {
@@ -302,7 +326,7 @@ const toolRegistry = {
 
       const formData = new FormData();
       const blob = new Blob([buffer], { type: 'application/octet-stream' });
-      formData.append('image_file', blob, filename);
+      formData.append('file', blob, filename);
 
       if (args.format) {
         formData.append('format', args.format);
@@ -351,6 +375,135 @@ const toolRegistry = {
         height,
         processing_time_ms: processingTime,
       };
+    },
+  },
+
+  remove_video_background: {
+    schema: {
+      name: 'remove_video_background',
+      title: 'Remove Video Background',
+      description:
+        'Remove the background from a video given by public URL. Returns a job; when wait is true (default) the tool polls for up to 50 seconds and returns the finished job with result_url (a direct download link valid for 24 hours). For longer videos call get_job with the returned job id until status is completed. Costs 5 credits per second of video.',
+      annotations: {
+        title: 'Remove Video Background',
+        readOnlyHint: true,
+        destructiveHint: false,
+        idempotentHint: false,
+        openWorldHint: true,
+      },
+      inputSchema: {
+        type: 'object',
+        properties: {
+          video_url: {
+            type: 'string',
+            description:
+              'Public https URL of the video (mp4, mov, webm or mkv; up to 500 MB and 5 minutes)',
+          },
+          format: {
+            type: 'string',
+            enum: ['webm', 'mov', 'mp4'],
+            default: 'webm',
+            description:
+              "Output container. 'webm' (VP9) and 'mov' (ProRes 4444) keep transparency; 'mp4' (H.264) has no alpha and is composited onto bg_color",
+          },
+          channels: {
+            type: 'string',
+            enum: ['rgba', 'rgb', 'alpha'],
+            default: 'rgba',
+            description:
+              "'rgba' for a transparent video, 'rgb' for an opaque video on bg_color, 'alpha' for a grayscale matte video (no audio)",
+          },
+          bg_color: {
+            type: 'string',
+            description:
+              "Background color (hex, rgb, or color name) used when the output has no transparency (channels 'rgb' or format 'mp4'). Defaults to white. Example: '#00ff00' for green screen",
+          },
+          size: {
+            type: 'string',
+            enum: ['full', 'preview', 'medium', 'hd'],
+            default: 'full',
+            description:
+              'Output size preset. The longest side is capped at 640 (preview), 1280 (medium) or 1920 (hd/full) pixels',
+          },
+          wait: {
+            type: 'boolean',
+            default: true,
+            description:
+              'Poll until the job finishes (up to 50 seconds) before returning. Set to false to get the job id back immediately',
+          },
+        },
+        required: ['video_url'],
+      },
+    },
+    handler: async (args: any, ctx: RequestContext) => {
+      if (typeof args.video_url !== 'string' || !args.video_url.startsWith('https://')) {
+        throw new Error('video_url must be a public https:// URL');
+      }
+
+      const formData = new FormData();
+      formData.append('url', args.video_url);
+      if (args.format) {
+        formData.append('format', args.format);
+      }
+      if (args.channels) {
+        formData.append('channels', args.channels);
+      }
+      if (args.bg_color) {
+        formData.append('bg_color', args.bg_color);
+      }
+      if (args.size) {
+        formData.append('size', args.size);
+      }
+
+      const response = await callPoofApi('/remove', {}, ctx, 'POST', formData);
+      if (response.status !== 202) {
+        throw new Error(
+          `Expected a video job (202) but the API returned ${response.status}. Is video_url a video?`
+        );
+      }
+      let job = (await response.json()) as Record<string, any>;
+
+      if (args.wait !== false) {
+        const deadline = Date.now() + jobPollConfig.maxWaitMs;
+        while (job.status !== 'completed' && job.status !== 'failed' && Date.now() < deadline) {
+          await sleep(Math.min(jobPollConfig.intervalMs, Math.max(0, deadline - Date.now())));
+          job = await fetchJob(job.id, ctx);
+        }
+      }
+
+      return jobResult(job);
+    },
+  },
+
+  get_job: {
+    schema: {
+      name: 'get_job',
+      title: 'Get Video Job',
+      description:
+        'Get the status of a video background removal job started with remove_video_background. Polling is free. When status is completed the job carries result_url, a direct download link valid for 24 hours.',
+      annotations: {
+        title: 'Get Video Job',
+        readOnlyHint: true,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: false,
+      },
+      inputSchema: {
+        type: 'object',
+        properties: {
+          job_id: {
+            type: 'string',
+            description: 'Job id returned by remove_video_background (starts with job_)',
+          },
+        },
+        required: ['job_id'],
+      },
+    },
+    handler: async (args: any, ctx: RequestContext) => {
+      if (typeof args.job_id !== 'string' || !args.job_id) {
+        throw new Error('job_id is required');
+      }
+      return jobResult(await fetchJob(args.job_id, ctx));
     },
   },
 
@@ -499,6 +652,21 @@ function errorHint(err: PoofApiError): string | undefined {
   }
   if (code === 'invalid_image' || err.status === 422) {
     return 'Only PNG, JPEG and WebP images are supported. Do not retry the same image.';
+  }
+  if (code === 'video_too_large') {
+    return 'The video is larger than the limit (100 MB uploaded, 500 MB by URL). Do not retry the same video; use a smaller or shorter one.';
+  }
+  if (code === 'video_too_long') {
+    return 'The video is longer than 5 minutes. Do not retry it unchanged; trim it or split it into shorter clips.';
+  }
+  if (code === 'invalid_video') {
+    return 'The file could not be read as a video (mp4, mov, webm or mkv). Do not retry the same URL.';
+  }
+  if (code === 'job_not_found' || (err.status === 404 && code !== 'processing_failed')) {
+    return 'No job with this id exists (jobs are deleted 24 hours after completion). Do not retry; start a new remove_video_background job.';
+  }
+  if (code === 'job_failed') {
+    return 'The video job failed and its credits were refunded. Do not retry it unchanged; try a different video or format.';
   }
   if (code === 'validation_error') {
     return 'A parameter value was rejected. Fix the parameter named in the error before retrying.';
