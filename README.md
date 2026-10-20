@@ -352,7 +352,7 @@ Remove the background from a video. Pass a public URL; the result is a direct do
 | `format` | string | No | Output container: `webm` (VP9, transparent), `mov` (ProRes 4444, transparent), `mp4` (H.264, composited onto `bg_color`) (default: `webm`) |
 | `channels` | string | No | `rgba` for transparency, `rgb` for an opaque background, `alpha` for a grayscale matte video (default: `rgba`) |
 | `bg_color` | string | No | Background color when the output has no transparency (`rgb` or `mp4`), e.g. `#00ff00` (default: white) |
-| `size` | string | No | Output size preset: `full`, `preview` (640), `medium` (1280), `hd` (1920) (default: `full`, capped at 1080p) |
+| `size` | string | No | Output size preset: `full`, `preview` (640), `medium` (1280), `hd` (1920) (default: `full`, source resolution up to 4K) |
 | `wait` | boolean | No | Poll until the job finishes, up to 50 seconds, before returning (default: `true`). Set `false` to get the job id back immediately |
 
 **Example prompts:**
