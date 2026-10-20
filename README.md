@@ -7,7 +7,7 @@ Migrating from remove.bg? It shuts down on 1 December 2026 — see the [remove.b
 ## Features
 
 - **remove_background** - Remove background from images (accepts base64 or URL)
-- **remove_video_background** - Remove background from a video by URL: transparent WebM/MOV, green-screen MP4 or alpha matte, audio kept
+- **remove_video_background** - Remove background from a video by URL: transparent WebM/MOV, green-screen MP4, looping transparent GIF or alpha matte, audio kept (except GIF)
 - **get_job** - Check the status of a video job and get its download link
 - **get_account** - Check your account info and credit balance
 - Supports both **stdio** (local) and **HTTP** (remote/Cloudflare Worker) transports
@@ -348,7 +348,7 @@ Remove the background from a video. Pass a public URL; the result is a direct do
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
-| `video_url` | string | Yes | Public `https` URL of the video (mp4, mov, webm, mkv or animated gif; up to 500 MB and 5 minutes) |
+| `video_url` | string | Yes | Public `https` URL of the video (mp4, mov, webm, m4v, mkv or animated gif; up to 500 MB and 5 minutes) |
 | `format` | string | No | Output container: `webm` (VP9, transparent), `mov` (ProRes 4444, transparent), `mp4` (H.264, composited onto `bg_color`), `gif` (looping GIF, 1-bit transparency, no audio, capped at 720p; `size: preview` for sticker-sized output) (default: `webm`) |
 | `channels` | string | No | `rgba` for transparency, `rgb` for an opaque background, `alpha` for a grayscale matte video (default: `rgba`) |
 | `bg_color` | string | No | Background color when the output has no transparency (`rgb` or `mp4`), e.g. `#00ff00` (default: white) |

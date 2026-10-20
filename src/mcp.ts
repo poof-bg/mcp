@@ -397,7 +397,7 @@ const toolRegistry = {
           video_url: {
             type: 'string',
             description:
-              'Public https URL of the video (mp4, mov, webm, mkv or animated gif; up to 500 MB and 5 minutes)',
+              'Public https URL of the video (mp4, mov, webm, m4v, mkv or animated gif; up to 500 MB and 5 minutes)',
           },
           format: {
             type: 'string',
@@ -623,6 +623,16 @@ export function toolErrorResult(err: unknown) {
 function errorHint(err: PoofApiError): string | undefined {
   const code = errorCode(err);
   if (err.status === 402 || code === 'payment_required') {
+    // A video job that costs more than the credits left carries the price in
+    // details; the account still has credits for images and shorter clips.
+    const details = err.body?.details as { credits_required?: unknown } | undefined;
+    if (details && typeof details === 'object' && details.credits_required !== undefined) {
+      return (
+        'This video costs more credits than the account has left. Do not retry it unchanged. ' +
+        'Images and shorter clips may still work. To process this video, tell the user to top ' +
+        'up, enable Auto Recharge or upgrade at https://dash.poof.bg.'
+      );
+    }
     return (
       "The Poof account's monthly credits are used up. Do not retry, and do not process " +
       'other images: they will fail the same way. Tell the user to top up, enable Auto ' +
@@ -660,7 +670,7 @@ function errorHint(err: PoofApiError): string | undefined {
     return 'The video is longer than 5 minutes. Do not retry it unchanged; trim it or split it into shorter clips.';
   }
   if (code === 'invalid_video') {
-    return 'The file could not be read as a video (mp4, mov, webm, mkv or animated gif). Do not retry the same URL.';
+    return 'The file could not be read as a video (mp4, mov, webm, m4v, mkv or animated gif). Do not retry the same URL.';
   }
   if (code === 'job_not_found' || (err.status === 404 && code !== 'processing_failed')) {
     return 'No job with this id exists (jobs are deleted 24 hours after completion). Do not retry; start a new remove_video_background job.';
