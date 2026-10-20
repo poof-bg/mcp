@@ -404,7 +404,7 @@ const toolRegistry = {
             enum: ['webm', 'mov', 'mp4', 'gif'],
             default: 'webm',
             description:
-              "Output container. 'webm' (VP9) and 'mov' (ProRes 4444) keep transparency; 'mp4' (H.264) has no alpha and is composited onto bg_color; 'gif' is a looping GIF with 1-bit transparency and no audio (large files, soft edges are hard-cut) for stickers, chat and email: prefer size 'medium' with it",
+              "Output container. 'webm' (VP9) and 'mov' (ProRes 4444) keep transparency; 'mp4' (H.264) has no alpha and is composited onto bg_color; 'gif' is a looping GIF with 1-bit transparency and no audio, capped at 720p and 50 fps (large files, soft edges are hard-cut) for stickers, chat and email: use size 'preview' for sticker-sized output",
           },
           channels: {
             type: 'string',
