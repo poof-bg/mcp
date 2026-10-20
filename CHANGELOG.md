@@ -2,6 +2,27 @@
 
 ## [Unreleased]
 
+## [1.5.0] - 2026-10-20
+
+### Added
+
+- `remove_video_background` accepts `format: "gif"` (looping GIF with 1-bit
+  transparency, no audio, capped at 720p and 50 fps; use `size: "preview"` for
+  sticker-sized output) and animated GIF URLs as input
+- The `full` size preset documents 4K output (4096 px on the longest side)
+
+### Changed
+
+- The worker is deployed to Cloudflare automatically on every push to `main`
+
+## [1.4.0] - 2026-10-19
+
+### Added
+
+- `remove_video_background` and `get_job` tools: submit a video by URL, poll
+  the job and return the `result_url`
+- `remove_background` uploads as `file` (the API's primary field name)
+
 ### Changed
 
 - `remove_video_background`: the `full` size preset (default) now keeps the
