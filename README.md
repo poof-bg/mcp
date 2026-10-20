@@ -348,8 +348,8 @@ Remove the background from a video. Pass a public URL; the result is a direct do
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
-| `video_url` | string | Yes | Public `https` URL of the video (mp4, mov, webm or mkv; up to 500 MB and 5 minutes) |
-| `format` | string | No | Output container: `webm` (VP9, transparent), `mov` (ProRes 4444, transparent), `mp4` (H.264, composited onto `bg_color`) (default: `webm`) |
+| `video_url` | string | Yes | Public `https` URL of the video (mp4, mov, webm, mkv or animated gif; up to 500 MB and 5 minutes) |
+| `format` | string | No | Output container: `webm` (VP9, transparent), `mov` (ProRes 4444, transparent), `mp4` (H.264, composited onto `bg_color`), `gif` (looping GIF, 1-bit transparency, no audio, capped at 720p; `size: preview` for sticker-sized output) (default: `webm`) |
 | `channels` | string | No | `rgba` for transparency, `rgb` for an opaque background, `alpha` for a grayscale matte video (default: `rgba`) |
 | `bg_color` | string | No | Background color when the output has no transparency (`rgb` or `mp4`), e.g. `#00ff00` (default: white) |
 | `size` | string | No | Output size preset: `full`, `preview` (640), `medium` (1280), `hd` (1920) (default: `full`, source resolution up to 4K) |
