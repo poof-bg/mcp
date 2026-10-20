@@ -26,9 +26,27 @@
       {
         "argsIgnorePattern": "^_"
       }
+    ],
+    "no-console": [
+      "error",
+      {
+        "allow": [
+          "error",
+          "warn"
+        ]
+      }
     ]
   },
   "overrides": [
+    {
+      "files": [
+        "src/worker.ts",
+        "src/auth-handler.ts"
+      ],
+      "rules": {
+        "no-console": "off"
+      }
+    },
     {
       "files": [
         "**/*.test.ts"

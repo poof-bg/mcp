@@ -2,10 +2,44 @@ import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import {
   ListToolsRequestSchema,
   CallToolRequestSchema,
+  ErrorCode,
+  McpError,
 } from '@modelcontextprotocol/sdk/types.js';
 import { z } from 'zod';
 
+import { sanitizeClientName } from './client.js';
+import { VERSION } from './version.js';
+
 const API_BASE_URL = 'https://api.poof.bg/v1';
+
+// A non-2xx response from the Poof API. Carries the HTTP status and the API's
+// `{ code, message, details, request_id, doc_url }` body (when it parses) so the
+// failure can be reported to the model as a readable tool result.
+export class PoofApiError extends Error {
+  status: number;
+  body: any;
+
+  constructor(status: number, body: any, rawText: string) {
+    super(rawText);
+    this.name = 'PoofApiError';
+    this.status = status;
+    this.body = body;
+  }
+}
+
+export type Transport = 'hosted' | 'stdio';
+
+// Per-request credentials and identity for calls to the Poof API.
+export type RequestContext = {
+  apiKey: string;
+  userAgent: string;
+};
+
+// The User-Agent tells the API's request logs which AI client and transport the
+// traffic came from, e.g. "poof-mcp/<version> (Claude-ClaudeAI; hosted)".
+export function buildUserAgent(client: string, transport: Transport) {
+  return `poof-mcp/${VERSION} (${client}; ${transport})`;
+}
 
 // Helper to detect if string is a URL
 function isUrl(str: string): boolean {
@@ -31,7 +65,10 @@ async function getImageBuffer(
     // Fetch from URL
     const response = await fetch(image);
     if (!response.ok) {
-      throw new Error(`Failed to fetch image from URL: ${response.statusText}`);
+      throw new Error(
+        `Could not download the image from the URL (HTTP ${response.status} ${response.statusText}). ` +
+          'The URL must point directly to a publicly accessible PNG, JPEG, WebP or GIF image.'
+      );
     }
     const arrayBuffer = await response.arrayBuffer();
     const urlPath = new URL(image).pathname;
@@ -87,15 +124,16 @@ function buildUrl(path: string, args?: any): string {
 async function callPoofApi(
   path: string,
   args: any,
-  apiKey: string,
+  ctx: RequestContext,
   method: 'GET' | 'POST' = 'GET',
   formData?: FormData
 ): Promise<Response> {
-  console.error(`[MCP] Calling Poof API: ${method} ${path}`);
+  console.error(`[MCP] Calling Poof API: ${method} ${path}, UA: ${ctx.userAgent}`);
 
   const url = method === 'GET' ? buildUrl(path, args) : `${API_BASE_URL}${path}`;
   const headers: Record<string, string> = {
-    'x-api-key': apiKey,
+    'x-api-key': ctx.apiKey,
+    'User-Agent': ctx.userAgent,
   };
 
   let body: BodyInit | undefined;
@@ -108,47 +146,154 @@ async function callPoofApi(
     body = JSON.stringify(args);
   }
 
-  const res = await fetch(url, {
-    method,
-    headers,
-    body,
-  });
+  for (let attempt = 0; ; attempt++) {
+    const res = await fetch(url, {
+      method,
+      headers,
+      body,
+    });
 
-  if (!res.ok) {
+    if (res.ok) {
+      return res;
+    }
+
     const errorText = await res.text();
     console.error(`Poof API Error (${res.status}): ${errorText}`);
-    throw new Error(errorText);
-  }
+    let errorBody: any = null;
+    try {
+      errorBody = JSON.parse(errorText);
+    } catch {
+      // Non-JSON error body (e.g. an HTML error page) — keep the raw text.
+    }
+    const err = new PoofApiError(res.status, errorBody, errorText);
 
-  return res;
+    // Rate limits and an unavailable processing service clear quickly, so retry
+    // those here instead of handing the failure to the model. Failed requests
+    // are not billed. Used-up credits are not retried.
+    if (isRetryable(err) && attempt < retryConfig.maxRetries) {
+      await sleep(retryDelayMs(res, attempt));
+      continue;
+    }
+    throw err;
+  }
+}
+
+export const retryConfig = { maxRetries: 2, baseDelayMs: 2000, maxDelayMs: 10000 };
+
+// The API sends no Retry-After today; honour it if it ever does.
+function retryDelayMs(res: { headers?: Headers }, attempt: number) {
+  const retryAfter = Number(res.headers?.get?.('retry-after'));
+  const delay = retryAfter > 0
+    ? retryAfter * 1000
+    : retryConfig.baseDelayMs * 2 ** attempt * (1 + Math.random() * 0.5);
+  return Math.min(delay, retryConfig.maxDelayMs);
+}
+
+function sleep(ms: number) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function errorCode(err: PoofApiError): string | undefined {
+  return err.body?.code;
+}
+
+function isRateLimit(err: PoofApiError) {
+  return err.status === 429;
+}
+
+// upstream_error: the processing service is unreachable (502), temporarily
+// unavailable (503) or timed out (504). All three are safe to retry.
+function isUpstreamError(err: PoofApiError) {
+  return [502, 503, 504].includes(err.status);
+}
+
+// A `url` the API could not fetch (upstream HTTP error, timeout, DNS, redirects)
+// comes back as a 400 validation_error, or a 422 invalid_image when the URL
+// answered with something that is not an image or video, with details.field
+// naming the URL field.
+const URL_FIELDS = ['url', 'image_url', 'video_url'];
+function isUrlDownloadError(err: PoofApiError) {
+  const code = errorCode(err);
+  if (code !== 'validation_error' && code !== 'invalid_image') return false;
+  const message: string = typeof err.body?.message === 'string' ? err.body.message : '';
+  const field = err.body?.details?.field;
+  const namesUrlField =
+    (typeof field === 'string' && URL_FIELDS.includes(field)) ||
+    /\b(url|image_url|video_url)\b/.test(message);
+  return namesUrlField && /download|returned|redirect|resolve|timed out/i.test(message);
+}
+
+function isRetryable(err: PoofApiError) {
+  return isRateLimit(err) || isUpstreamError(err);
+}
+
+function arrayBufferToBase64(buffer: ArrayBuffer): string {
+  const bytes = new Uint8Array(buffer);
+  let binaryString = '';
+  for (let i = 0; i < bytes.length; i++) {
+    binaryString += String.fromCharCode(bytes[i]);
+  }
+  return btoa(binaryString);
+}
+
+
+// Video jobs: how often remove_video_background polls while waiting, and for how
+// long before it hands the job back to the model (exported so tests can shorten it).
+export const jobPollConfig = { intervalMs: 3000, maxWaitMs: 50000 };
+
+
+async function fetchJob(jobId: string, ctx: RequestContext): Promise<Record<string, any>> {
+  const response = await callPoofApi(`/jobs/${encodeURIComponent(jobId)}`, {}, ctx, 'GET');
+  return (await response.json()) as Record<string, any>;
+}
+
+function jobResult(job: Record<string, any>) {
+  const done = job.status === 'completed' || job.status === 'failed';
+  return {
+    success: job.status !== 'failed',
+    job,
+    ...(done
+      ? {}
+      : {
+          hint: `The video is still ${job.status}. Call get_job with job_id "${job.id}" to check again; result_url is set once the status is completed.`,
+        }),
+  };
 }
 
 const toolRegistry = {
   remove_background: {
     schema: {
       name: 'remove_background',
+      title: 'Remove Image Background',
       description:
-        'Remove the background from an image. Returns the processed image as base64. Accepts URL or base64-encoded image. Can also resize the result to an exact width x height without stretching (width, height, fit).',
+        'Remove the background from an image, leaving the subject on a transparent (or solid color) background. Accepts an image URL or base64-encoded image (PNG, JPEG, WebP or still GIF, up to 20 MB) and returns the processed image. For animated GIFs and videos use remove_video_background. Can also crop to the subject and resize the result to an exact width x height without stretching (width, height, fit). Costs 1 credit.',
+      annotations: {
+        title: 'Remove Image Background',
+        readOnlyHint: true,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: true,
+      },
       inputSchema: {
         type: 'object',
         properties: {
           image: {
             type: 'string',
             description:
-              'Image input: base64-encoded image data or a URL to an image',
+              'Image input: a publicly accessible URL to a PNG, JPEG, WebP or still GIF image (including https://), or base64-encoded image data (optionally as a data: URL). Animated GIFs are videos: use remove_video_background',
           },
           format: {
             type: 'string',
             enum: ['png', 'jpg', 'webp'],
             default: 'png',
-            description: 'Output image format',
+            description: "Output image format. 'jpg' has no transparency",
           },
           channels: {
             type: 'string',
-            enum: ['rgba', 'rgb'],
+            enum: ['rgba', 'rgb', 'alpha'],
             default: 'rgba',
             description:
-              "Output color channels. Use 'rgba' for transparency, 'rgb' for opaque background",
+              "Output color channels. Use 'rgba' for transparency, 'rgb' for an opaque background (bg_color, white by default), 'alpha' for the grayscale alpha mask only",
           },
           bg_color: {
             type: 'string',
@@ -192,12 +337,12 @@ const toolRegistry = {
         required: ['image'],
       },
     },
-    handler: async (args: any, apiKey: string) => {
+    handler: async (args: any, ctx: RequestContext) => {
       const { buffer, filename } = await getImageBuffer(args.image);
 
       const formData = new FormData();
       const blob = new Blob([buffer], { type: 'application/octet-stream' });
-      formData.append('image_file', blob, filename);
+      formData.append('file', blob, filename);
 
       if (args.format) {
         formData.append('format', args.format);
@@ -224,7 +369,24 @@ const toolRegistry = {
         formData.append('fit', args.fit);
       }
 
-      const response = await callPoofApi('/remove', {}, apiKey, 'POST', formData);
+      const response = await callPoofApi('/remove', {}, ctx, 'POST', formData);
+
+      // An animated GIF (or a video passed as an image) is a video for the API:
+      // it answers 202 with a job instead of an image. Hand the job back rather
+      // than encoding its JSON as a picture.
+      if (response.status === 202) {
+        const job = (await response.json()) as Record<string, any>;
+        return {
+          success: true,
+          job,
+          hint:
+            'The input is an animated GIF or a video, so Poof started a video job ' +
+            `(${job.credits !== undefined ? `${job.credits} credits, ` : ''}charged on accept and refunded if the job fails) ` +
+            'instead of returning an image. ' +
+            `Call get_job with job_id "${job.id}" until status is completed, then use result_url. ` +
+            'Next time use remove_video_background for animated GIFs and videos.',
+        };
+      }
 
       // Get response metadata
       const width = parseInt(response.headers.get('X-Image-Width') || '0', 10);
@@ -234,26 +396,14 @@ const toolRegistry = {
         10
       );
 
-      // Get image data
-      const imageArrayBuffer = await response.arrayBuffer();
-
-      // Convert to base64
       const format = args.format || 'png';
       const mimeType =
         format === 'jpg' ? 'image/jpeg' : format === 'webp' ? 'image/webp' : 'image/png';
-      
-      // Convert ArrayBuffer to base64
-      const bytes = new Uint8Array(imageArrayBuffer);
-      let binaryString = '';
-      for (let i = 0; i < bytes.length; i++) {
-        binaryString += String.fromCharCode(bytes[i]);
-      }
-      const base64 = btoa(binaryString);
-      const dataUrl = `data:${mimeType};base64,${base64}`;
 
       return {
+        image: { data: arrayBufferToBase64(await response.arrayBuffer()), mimeType },
         success: true,
-        data: dataUrl,
+        format,
         width,
         height,
         processing_time_ms: processingTime,
@@ -261,19 +411,156 @@ const toolRegistry = {
     },
   },
 
+  remove_video_background: {
+    schema: {
+      name: 'remove_video_background',
+      title: 'Remove Video Background',
+      description:
+        'Remove the background from a video given by public URL. Returns a job; when wait is true (default) the tool polls for up to 50 seconds and returns the finished job with result_url (a direct download link valid for 24 hours). For longer videos call get_job with the returned job id until status is completed. Costs 5 credits per second of video, rounded up (10 per second above 30 fps; animated GIFs are always 5 per second), charged when the job is accepted and refunded if it fails.',
+      annotations: {
+        title: 'Remove Video Background',
+        readOnlyHint: true,
+        destructiveHint: false,
+        idempotentHint: false,
+        openWorldHint: true,
+      },
+      inputSchema: {
+        type: 'object',
+        properties: {
+          video_url: {
+            type: 'string',
+            description:
+              'Public https URL of the video (mp4, mov, webm, m4v, mkv or animated gif; up to 500 MB and 5 minutes)',
+          },
+          format: {
+            type: 'string',
+            enum: ['webm', 'mov', 'mp4', 'gif'],
+            default: 'webm',
+            description:
+              "Output container. 'webm' (VP9) and 'mov' (ProRes 4444) keep transparency; 'mp4' (H.264) has no alpha and is composited onto bg_color; 'gif' is a looping GIF with 1-bit transparency and no audio, capped at 1280 px on the longest side (720p for widescreen) and 50 fps (large files, soft edges are hard-cut) for stickers, chat and email: use size 'preview' for sticker-sized output",
+          },
+          channels: {
+            type: 'string',
+            enum: ['rgba', 'rgb', 'alpha'],
+            default: 'rgba',
+            description:
+              "'rgba' for a transparent video, 'rgb' for an opaque video on bg_color, 'alpha' for a grayscale matte video (no audio)",
+          },
+          bg_color: {
+            type: 'string',
+            description:
+              "Background color (hex, rgb, or color name) used when the output has no transparency (channels 'rgb' or format 'mp4'). Defaults to white. Example: '#00ff00' for green screen",
+          },
+          size: {
+            type: 'string',
+            enum: ['full', 'preview', 'medium', 'hd'],
+            default: 'full',
+            description:
+              'Output size preset. The longest side is capped at 640 (preview), 1280 (medium) or 1920 (hd) pixels; full keeps the source resolution up to 4096 pixels (4K)',
+          },
+          wait: {
+            type: 'boolean',
+            default: true,
+            description:
+              'Poll until the job finishes (up to 50 seconds) before returning. Set to false to get the job id back immediately',
+          },
+        },
+        required: ['video_url'],
+      },
+    },
+    handler: async (args: any, ctx: RequestContext) => {
+      if (typeof args.video_url !== 'string' || !args.video_url.startsWith('https://')) {
+        throw new Error('video_url must be a public https:// URL');
+      }
+
+      const formData = new FormData();
+      formData.append('url', args.video_url);
+      if (args.format) {
+        formData.append('format', args.format);
+      }
+      if (args.channels) {
+        formData.append('channels', args.channels);
+      }
+      if (args.bg_color) {
+        formData.append('bg_color', args.bg_color);
+      }
+      if (args.size) {
+        formData.append('size', args.size);
+      }
+
+      const response = await callPoofApi('/remove', {}, ctx, 'POST', formData);
+      if (response.status !== 202) {
+        throw new Error(
+          `Expected a video job (202) but the API returned ${response.status}. Is video_url a video?`
+        );
+      }
+      let job = (await response.json()) as Record<string, any>;
+
+      if (args.wait !== false) {
+        const deadline = Date.now() + jobPollConfig.maxWaitMs;
+        while (job.status !== 'completed' && job.status !== 'failed' && Date.now() < deadline) {
+          await sleep(Math.min(jobPollConfig.intervalMs, Math.max(0, deadline - Date.now())));
+          job = await fetchJob(job.id, ctx);
+        }
+      }
+
+      return jobResult(job);
+    },
+  },
+
+  get_job: {
+    schema: {
+      name: 'get_job',
+      title: 'Get Video Job',
+      description:
+        'Get the status of a video background removal job started with remove_video_background (or by remove_background given an animated GIF). Polling is free. When status is completed the job carries result_url, a direct download link valid for 24 hours.',
+      annotations: {
+        title: 'Get Video Job',
+        readOnlyHint: true,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: false,
+      },
+      inputSchema: {
+        type: 'object',
+        properties: {
+          job_id: {
+            type: 'string',
+            description: 'Job id returned by remove_video_background (starts with job_)',
+          },
+        },
+        required: ['job_id'],
+      },
+    },
+    handler: async (args: any, ctx: RequestContext) => {
+      if (typeof args.job_id !== 'string' || !args.job_id) {
+        throw new Error('job_id is required');
+      }
+      return jobResult(await fetchJob(args.job_id, ctx));
+    },
+  },
+
   get_account: {
     schema: {
       name: 'get_account',
+      title: 'Get Poof Account',
       description:
-        'Get account information including plan details and credit usage',
+        "Get the Poof account's plan and credit usage: maxCredits, usedCredits and remainingCredits for the current billing cycle. Free; use it to check whether there are credits left before processing many images.",
+      annotations: {
+        title: 'Get Poof Account',
+        readOnlyHint: true,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: false,
+      },
       inputSchema: {
         type: 'object',
         properties: {},
         required: [],
       },
     },
-    handler: async (_args: any, apiKey: string) => {
-      const response = await callPoofApi('/me', {}, apiKey, 'GET');
+    handler: async (_args: any, ctx: RequestContext) => {
+      const response = await callPoofApi('/me', {}, ctx, 'GET');
       const data = await response.json() as Record<string, any>;
 
       return {
@@ -291,12 +578,165 @@ export function listTools() {
   return Object.values(toolRegistry).map((t) => t.schema);
 }
 
-export async function callTool(name: string, args: any, apiKey: string) {
+export async function callTool(name: string, args: any, ctx: RequestContext) {
   const tool = (toolRegistry as any)[name];
-  if (!tool) {
+  if (!Object.prototype.hasOwnProperty.call(toolRegistry, name)) {
     throw new Error(`Unknown tool: ${name}`);
   }
-  return tool.handler(args, apiKey);
+  for (const field of tool.schema.inputSchema.required) {
+    if (args?.[field] === undefined || args?.[field] === null || args?.[field] === '') {
+      throw new Error(`Missing required argument "${field}" for ${name}`);
+    }
+  }
+  return tool.handler(args, ctx);
+}
+
+/**
+ * Turn a tool's return value into MCP content. A processed image goes out as an
+ * image content block, which clients show and models can look at, with the
+ * rest of the result as JSON text. Base64 image data inside the JSON text would
+ * only fill the model's context.
+ */
+export function toolResultContent(result: any) {
+  if (result && typeof result === 'object' && result.image?.data) {
+    const { image, ...rest } = result;
+    return [
+      { type: 'image' as const, data: image.data as string, mimeType: image.mimeType as string },
+      { type: 'text' as const, text: JSON.stringify(rest) },
+    ];
+  }
+  return [{ type: 'text' as const, text: JSON.stringify(result) }];
+}
+
+/**
+ * Turn a failed tool call into a tool result with `isError: true`.
+ *
+ * MCP distinguishes protocol errors (malformed request, unknown tool) from tool
+ * execution errors. Throwing from a CallTool handler on the low-level `Server`
+ * produces a JSON-RPC error, which clients count as a failed request and the
+ * model cannot read. API failures (invalid image, credits used up, rate limited)
+ * are tool execution errors: return them as content so the model can react.
+ */
+export function toolErrorResult(err: unknown) {
+  let text: string;
+
+  if (err instanceof PoofApiError) {
+    const body = err.body;
+    const code = body?.code ? ` ${body.code}` : '';
+    const details =
+      body?.details && typeof body.details === 'object'
+        ? JSON.stringify(body.details)
+        : body?.details;
+    const parts = [body?.message, details].filter(Boolean);
+    const summary = parts.length ? parts.join(': ') : err.message || 'Request failed';
+    text = `Poof API error (HTTP ${err.status}${code}): ${summary}`;
+    const hint = errorHint(err);
+    if (hint) {
+      text += `\n${hint}`;
+    }
+    if (body?.doc_url) {
+      text += `\nDocumentation: ${body.doc_url}`;
+    }
+    if (body?.request_id) {
+      text += `\nRequest ID: ${body.request_id}`;
+    }
+  } else {
+    const message = err instanceof Error ? err.message : String(err);
+    text = `Poof request failed: ${message}`;
+  }
+
+  return {
+    content: [{ type: 'text' as const, text }],
+    isError: true,
+  };
+}
+
+// Tell the model whether retrying can help, so agents working through a list of
+// images stop on terminal errors instead of repeating them.
+function errorHint(err: PoofApiError): string | undefined {
+  const code = errorCode(err);
+  if (err.status === 402 || code === 'payment_required') {
+    // A video job that costs more than the credits left carries the price in
+    // details; the account still has credits for images and shorter clips.
+    const details = err.body?.details as { credits_required?: unknown } | undefined;
+    if (details && typeof details === 'object' && details.credits_required !== undefined) {
+      return (
+        'This video costs more credits than the account has left. Do not retry it unchanged. ' +
+        'Images and shorter clips may still work. To process this video, tell the user to top ' +
+        'up, enable Auto Recharge or upgrade at https://dash.poof.bg.'
+      );
+    }
+    return (
+      "The Poof account's monthly credits are used up. Do not retry, and do not process " +
+      'other images: they will fail the same way. Tell the user to top up, enable Auto ' +
+      'Recharge or upgrade at https://dash.poof.bg, or wait for the next billing cycle.'
+    );
+  }
+  if (isRateLimit(err)) {
+    return (
+      "The plan's per-minute rate limit was exceeded (already retried). Process images one " +
+      'at a time, not in parallel, and wait about 15 seconds before retrying.'
+    );
+  }
+  if (isUpstreamError(err)) {
+    return 'The processing service is temporarily unavailable (already retried). Wait a minute before retrying.';
+  }
+  if (err.status === 401) {
+    return 'The Poof API key is invalid. Do not retry; the user needs to reconnect Poof or fix the key.';
+  }
+  if (err.status === 403) {
+    return (
+      "This feature is not available on the user's Poof plan. Do not retry; tell the user " +
+      'it requires an upgrade at https://dash.poof.bg.'
+    );
+  }
+  // Match the API's error code first: images and videos share the 413 and 422
+  // statuses but have different limits and formats.
+  if (isUrlDownloadError(err)) {
+    return (
+      'Poof could not download the file at the URL (see the status or reason above). The URL ' +
+      'must be public and point directly to the image or video file, not to a web page or a ' +
+      'link that needs a login. Some hosts block automated downloads. Do not retry the same ' +
+      'URL unchanged (a timeout may succeed once more); use a direct link from another host.'
+    );
+  }
+  if (code === 'video_too_large') {
+    return 'The video is larger than the limit (100 MB uploaded, 500 MB by URL). Do not retry the same video; use a smaller or shorter one.';
+  }
+  if (code === 'video_too_long') {
+    return 'The video is longer than 5 minutes. Do not retry it unchanged; trim it or split it into shorter clips.';
+  }
+  if (code === 'invalid_video') {
+    return 'The file could not be read as a video (mp4, mov, webm, m4v, mkv or animated gif). Do not retry the same URL.';
+  }
+  if (code === 'image_too_large') {
+    return 'The image is larger than 20 MB. Do not retry the same image; use a smaller or compressed one.';
+  }
+  if (code === 'invalid_image') {
+    return 'Only PNG, JPEG, WebP and GIF images are supported. Do not retry the same image.';
+  }
+  if (err.status === 413) {
+    return 'The file is too large (images up to 20 MB; videos up to 100 MB uploaded or 500 MB by URL). Do not retry the same file; use a smaller one.';
+  }
+  if (err.status === 422) {
+    return (
+      'The file could not be read as a supported image (PNG, JPEG, WebP, GIF) or video ' +
+      '(mp4, mov, webm, m4v, mkv, animated gif). Do not retry the same file.'
+    );
+  }
+  if (code === 'job_not_found' || (err.status === 404 && code !== 'processing_failed')) {
+    return 'No job with this id exists (jobs are deleted 24 hours after completion). Do not retry; start a new remove_video_background job.';
+  }
+  if (code === 'job_failed') {
+    return 'The video job failed and its credits were refunded. Do not retry it unchanged; try a different video or format.';
+  }
+  if (code === 'validation_error') {
+    return 'A parameter value was rejected. Fix the parameter named in the error before retrying.';
+  }
+  if (code === 'processing_failed') {
+    return 'Processing failed for this image. Do not retry it unchanged; try a different image or format.';
+  }
+  return undefined;
 }
 
 export const configSchema = z.object({
@@ -304,9 +744,16 @@ export const configSchema = z.object({
   debug: z.boolean().optional(),
 });
 
-export function createMcpServer(config: { poofApiKey: string; debug?: boolean }) {
+export function createMcpServer(config: {
+  poofApiKey: string;
+  debug?: boolean;
+  // AI client making the requests (see detectClient). When unset, the name the
+  // client sent in its MCP initialize request is used.
+  client?: string;
+  transport?: Transport;
+}) {
   const server = new Server(
-    { name: 'poof', version: '1.1.0' },
+    { name: 'poof', version: VERSION },
     { capabilities: { tools: {} } }
   );
 
@@ -315,20 +762,27 @@ export function createMcpServer(config: { poofApiKey: string; debug?: boolean })
   }));
 
   server.setRequestHandler(CallToolRequestSchema, async (req) => {
-    const result = await callTool(
-      req.params.name,
-      req.params.arguments,
-      config.poofApiKey
-    );
+    const name = req.params.name;
+    if (!Object.prototype.hasOwnProperty.call(toolRegistry, name)) {
+      // Unknown tool is a protocol error per the MCP spec.
+      throw new McpError(ErrorCode.InvalidParams, `Unknown tool: ${name}`);
+    }
 
-    return {
-      content: [
-        {
-          type: 'text',
-          text: JSON.stringify(result),
-        },
-      ],
+    const client =
+      config.client ?? sanitizeClientName(server.getClientVersion()?.name) ?? 'unknown';
+    const ctx: RequestContext = {
+      apiKey: config.poofApiKey,
+      userAgent: buildUserAgent(client, config.transport ?? 'stdio'),
     };
+
+    let result;
+    try {
+      result = await callTool(name, req.params.arguments ?? {}, ctx);
+    } catch (err) {
+      return toolErrorResult(err);
+    }
+
+    return { content: toolResultContent(result) };
   });
 
   return { server };

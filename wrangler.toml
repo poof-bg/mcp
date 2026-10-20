@@ -5,6 +5,10 @@ routes = [
   { pattern = "api.poof.bg/mcp", zone_name = "poof.bg" },
   { pattern = "api.poof.bg/.well-known/oauth-authorization-server", zone_name = "poof.bg" },
   { pattern = "api.poof.bg/.well-known/oauth-protected-resource", zone_name = "poof.bg" },
+  { pattern = "api.poof.bg/.well-known/oauth-authorization-server/mcp", zone_name = "poof.bg" },
+  { pattern = "api.poof.bg/.well-known/oauth-protected-resource/mcp", zone_name = "poof.bg" },
+  { pattern = "api.poof.bg/.well-known/openid-configuration", zone_name = "poof.bg" },
+  { pattern = "api.poof.bg/.well-known/openai-apps-challenge", zone_name = "poof.bg" },
   { pattern = "api.poof.bg/oauth/*", zone_name = "poof.bg" },
 ]
 

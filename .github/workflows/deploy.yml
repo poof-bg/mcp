@@ -1,0 +1,47 @@
+name: Deploy worker
+
+# Deploys the hosted MCP server (api.poof.bg/mcp) to Cloudflare Workers on every
+# push to main, after lint, build and tests pass. Secrets and KV bindings live in
+# Cloudflare and are untouched by `wrangler deploy`.
+#
+# Repository secrets: CLOUDFLARE_API_TOKEN (Workers Scripts: Edit, Workers Routes:
+# Edit on the poof.bg zone) and CLOUDFLARE_ACCOUNT_ID.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-worker
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+
+      - run: npm ci
+
+      - run: npm run lint
+
+      - run: npm run build
+
+      - run: npm test
+
+      - name: Deploy to Cloudflare Workers
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          command: deploy
