@@ -2,6 +2,17 @@
 
 ## [Unreleased]
 
+## [1.5.1] - 2026-10-20
+
+### Fixed
+
+- The `remove_video_background` description states the full video rate:
+  5 credits per second, 10 per second above 30 fps
+- A 402 for a video that costs more than the credits left (`details.credits_required`)
+  no longer tells the model the credits are used up: it says images and shorter
+  clips may still work
+- The video input formats list m4v; the README feature list includes GIF output
+
 ## [1.5.0] - 2026-10-20
 
 ### Added

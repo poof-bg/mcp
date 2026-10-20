@@ -426,6 +426,27 @@ describe('CallTool over the MCP protocol', () => {
     expect(result.content[0].text).toContain('https://dash.poof.bg');
   });
 
+  test('a video that costs more than the credits left says images and shorter clips may still work', async () => {
+    fetchMock.mockImplementation(async () =>
+      apiError(402, 'payment_required', 'This clip costs 150 credits; 65 are left.', {
+        credits_required: 150,
+        credits_remaining: 65,
+      })
+    );
+
+    const result: any = await client.callTool({
+      name: 'remove_video_background',
+      arguments: { video_url: 'https://example.com/clip.mp4' },
+    });
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(result.isError).toBe(true);
+    const text = result.content[0].text;
+    expect(text).toContain('"credits_required":150');
+    expect(text).toContain('Images and shorter clips may still work');
+    expect(text).not.toContain('monthly credits are used up');
+  });
+
   test('a non-JSON error body is passed through', async () => {
     fetchMock.mockImplementationOnce(async () => errorResponse(500, 'Internal Server Error'));
 
