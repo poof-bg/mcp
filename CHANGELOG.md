@@ -2,7 +2,43 @@
 
 ## [Unreleased]
 
-## [1.5.1] - 2026-10-20
+## [1.5.2] - 2026-10-20
+
+First npm release since 1.5.0. It includes the changes listed under 1.5.1,
+which was never published to npm or tagged.
+
+### Fixed
+
+- Error hints match the API's error code before falling back to the HTTP
+  status: a 422 `invalid_video` no longer says "Only PNG, JPEG and WebP images
+  are supported", and a 413 `video_too_large` no longer cites the 20 MB image
+  limit. A 413 or 422 without a known code gets a hint covering both images and
+  videos
+- A URL the API could not download (`validation_error` or `invalid_image` naming
+  the `url` field, e.g. "url returned HTTP 403.") gets a download hint for
+  images and videos instead of "Fix the parameter"
+- `remove_background` given an animated GIF (which the API treats as a video and
+  answers with 202 and a job) returns the job (`id`, `status`, `credits`,
+  `status_url`, ...) with a hint to poll `get_job` and use
+  `remove_video_background` next time, instead of returning the job JSON
+  encoded as a PNG
+
+### Added
+
+- `remove_background` accepts `channels: "alpha"` (grayscale alpha mask only)
+- `package.json` has `mcpName` (`io.github.poof-bg/mcp`) for the MCP Registry
+
+### Changed
+
+- Image formats list still GIF (PNG, JPEG, WebP or still GIF); animated GIFs
+  are pointed to `remove_video_background`
+- The video rate says it is rounded up, 10 credits per second above 30 fps,
+  always 5 per second for animated GIFs, charged when the job is accepted and
+  refunded if it fails
+- GIF output is described as capped at 1280 px on the longest side (720p for
+  widescreen) and 50 fps
+
+## [1.5.1] - 2026-10-20 (not published to npm)
 
 ### Fixed
 
@@ -20,7 +56,8 @@
 - `remove_video_background` accepts `format: "gif"` (looping GIF with 1-bit
   transparency, no audio, capped at 720p and 50 fps; use `size: "preview"` for
   sticker-sized output) and animated GIF URLs as input
-- The `full` size preset documents 4K output (4096 px on the longest side)
+- `remove_video_background`: the `full` size preset (default) now keeps the
+  source resolution up to 4K (4096 px on the longest side) instead of 1080p
 
 ### Changed
 
@@ -33,11 +70,6 @@
 - `remove_video_background` and `get_job` tools: submit a video by URL, poll
   the job and return the `result_url`
 - `remove_background` uploads as `file` (the API's primary field name)
-
-### Changed
-
-- `remove_video_background`: the `full` size preset (default) now keeps the
-  source resolution up to 4K (4096 px on the longest side) instead of 1080p
 
 ## [1.3.0] - 2026-10-19
 

@@ -349,7 +349,7 @@ describe('CallTool over the MCP protocol', () => {
     const text = result.content[0].text;
     expect(text).toContain('Poof API error (HTTP 422 invalid_image)');
     expect(text).toContain('could not be decoded');
-    expect(text).toContain('Only PNG, JPEG and WebP');
+    expect(text).toContain('Only PNG, JPEG, WebP and GIF');
     expect(text).toContain('Documentation: https://docs.poof.bg/errors/invalid-image');
     expect(text).toContain('Request ID: req_123');
   });
@@ -445,6 +445,107 @@ describe('CallTool over the MCP protocol', () => {
     expect(text).toContain('"credits_required":150');
     expect(text).toContain('Images and shorter clips may still work');
     expect(text).not.toContain('monthly credits are used up');
+  });
+
+  function removeVideoBackground(args: Record<string, unknown> = {}) {
+    return client.callTool({
+      name: 'remove_video_background',
+      arguments: { video_url: VIDEO_URL, ...args },
+    }) as Promise<any>;
+  }
+
+  test('422 invalid_video gets the video hint, not the image one', async () => {
+    fetchMock.mockImplementation(async () =>
+      apiError(422, 'invalid_video', 'The file could not be decoded as a video.')
+    );
+
+    const text = (await removeVideoBackground()).content[0].text;
+
+    expect(text).toContain('Poof API error (HTTP 422 invalid_video)');
+    expect(text).toContain('could not be read as a video');
+    expect(text).not.toContain('PNG');
+  });
+
+  test('413 video_too_large gets the video limits, not 20 MB', async () => {
+    fetchMock.mockImplementation(async () =>
+      apiError(413, 'video_too_large', 'The video exceeds the 500 MB limit.')
+    );
+
+    const text = (await removeVideoBackground()).content[0].text;
+
+    expect(text).toContain('100 MB uploaded, 500 MB by URL');
+    expect(text).not.toContain('20 MB');
+  });
+
+  test('413 image_too_large gets the 20 MB image hint', async () => {
+    fetchMock.mockImplementation(
+      imageFetch(() => apiError(413, 'image_too_large', 'The uploaded image exceeds the 20 MB limit.'))
+    );
+
+    const text = (await removeBackground()).content[0].text;
+
+    expect(text).toContain('The image is larger than 20 MB');
+  });
+
+  test('a 413 or 422 without a known code gets a hint covering images and videos', async () => {
+    fetchMock.mockImplementation(imageFetch(() => errorResponse(413, 'Payload Too Large')));
+    let text = (await removeBackground()).content[0].text;
+    expect(text).toContain('images up to 20 MB; videos up to 100 MB uploaded or 500 MB by URL');
+
+    fetchMock.mockImplementation(imageFetch(() => errorResponse(422, 'Unprocessable')));
+    text = (await removeBackground()).content[0].text;
+    expect(text).toContain('PNG, JPEG, WebP, GIF');
+    expect(text).toContain('mp4, mov, webm');
+  });
+
+  test('a video URL the API could not download gets a download hint', async () => {
+    fetchMock.mockImplementation(async () =>
+      apiError(400, 'validation_error', 'url returned HTTP 403.', { field: 'url', status: 403 })
+    );
+
+    const text = (await removeVideoBackground()).content[0].text;
+
+    expect(text).toContain('Poof API error (HTTP 400 validation_error): url returned HTTP 403.');
+    expect(text).toContain('could not download the file at the URL');
+    expect(text).toContain('image or video file');
+    expect(text).not.toContain('Fix the parameter');
+  });
+
+  test('a URL that timed out or did not return media gets the download hint', async () => {
+    fetchMock.mockImplementation(async () =>
+      apiError(400, 'validation_error', 'Timed out downloading url.', { field: 'url' })
+    );
+    expect((await removeVideoBackground()).content[0].text).toContain('could not download the file at the URL');
+
+    fetchMock.mockImplementation(async () =>
+      apiError(422, 'invalid_image', 'url returned an empty response.', { field: 'url' })
+    );
+    expect((await removeVideoBackground()).content[0].text).toContain('could not download the file at the URL');
+  });
+
+  test('remove_background given an animated GIF returns the video job, not a fake image', async () => {
+    const job = {
+      id: 'job_gif',
+      status: 'queued',
+      credits: 10,
+      status_url: 'https://api.poof.bg/v1/jobs/job_gif',
+      result_url: null,
+    };
+    fetchMock.mockImplementation(
+      imageFetch(() => ({ ok: true, status: 202, headers: new Headers(), json: async () => job }))
+    );
+
+    const result = await removeBackground();
+
+    expect(result.isError).toBeFalsy();
+    expect(result.content).toHaveLength(1);
+    expect(result.content[0].type).toBe('text');
+    const body = JSON.parse(result.content[0].text);
+    expect(body.success).toBe(true);
+    expect(body.job).toEqual(job);
+    expect(body.hint).toContain('get_job with job_id "job_gif"');
+    expect(body.hint).toContain('10 credits');
+    expect(body.hint).toContain('remove_video_background');
   });
 
   test('a non-JSON error body is passed through', async () => {
