@@ -1,0 +1,54 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "io.github.poof-bg/mcp",
+  "title": "Poof",
+  "description": "Remove backgrounds from images, videos and animated GIFs: transparent cutouts, mattes, GIF stickers.",
+  "websiteUrl": "https://poof.bg",
+  "repository": {
+    "url": "https://github.com/poof-bg/mcp",
+    "source": "github"
+  },
+  "version": "1.5.2",
+  "icons": [
+    {
+      "src": "https://poof.bg/images/apple-touch-icon.png",
+      "mimeType": "image/png",
+      "sizes": ["180x180"]
+    }
+  ],
+  "packages": [
+    {
+      "registryType": "npm",
+      "registryBaseUrl": "https://registry.npmjs.org",
+      "identifier": "@poof-bg/mcp",
+      "version": "1.5.2",
+      "runtimeHint": "npx",
+      "transport": {
+        "type": "stdio"
+      },
+      "environmentVariables": [
+        {
+          "name": "POOF_API_KEY",
+          "description": "Poof API key. Get one at https://dash.poof.bg",
+          "isRequired": true,
+          "isSecret": true,
+          "format": "string"
+        }
+      ]
+    }
+  ],
+  "remotes": [
+    {
+      "type": "streamable-http",
+      "url": "https://api.poof.bg/mcp",
+      "headers": [
+        {
+          "name": "x-api-key",
+          "description": "Poof API key (optional; OAuth is used when omitted). Get one at https://dash.poof.bg",
+          "isRequired": false,
+          "isSecret": true
+        }
+      ]
+    }
+  ]
+}

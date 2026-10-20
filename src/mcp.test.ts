@@ -103,6 +103,17 @@ describe('mcp tool registry', () => {
     expect(VERSION).toBe(pkg.version);
   });
 
+  test('server.json (MCP Registry) matches package.json', () => {
+    const pkg = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'));
+    const server = JSON.parse(readFileSync(new URL('../server.json', import.meta.url), 'utf8'));
+    expect(server.name).toBe(pkg.mcpName);
+    expect(server.version).toBe(pkg.version);
+    expect(server.description.length).toBeLessThanOrEqual(100);
+    const npmPackage = server.packages.find((p: any) => p.registryType === 'npm');
+    expect(npmPackage.identifier).toBe(pkg.name);
+    expect(npmPackage.version).toBe(pkg.version);
+  });
+
   test('remove_background uploads the image and forwards options as form fields', async () => {
     await callTool(
       'remove_background',
