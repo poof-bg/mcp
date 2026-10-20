@@ -423,7 +423,7 @@ const toolRegistry = {
             enum: ['full', 'preview', 'medium', 'hd'],
             default: 'full',
             description:
-              'Output size preset. The longest side is capped at 640 (preview), 1280 (medium) or 1920 (hd/full) pixels',
+              'Output size preset. The longest side is capped at 640 (preview), 1280 (medium) or 1920 (hd) pixels; full keeps the source resolution up to 4096 pixels (4K)',
           },
           wait: {
             type: 'boolean',

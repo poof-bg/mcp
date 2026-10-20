@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+### Changed
+
+- `remove_video_background`: the `full` size preset (default) now keeps the
+  source resolution up to 4K (4096 px on the longest side) instead of 1080p
+
 ## [1.3.0] - 2026-10-19
 
 ### Added
