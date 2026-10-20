@@ -6,7 +6,7 @@ Migrating from remove.bg? It shuts down on 1 December 2026 — see the [remove.b
 
 ## Features
 
-- **remove_background** - Remove background from images (accepts base64 or URL)
+- **remove_background** - Remove background from images: PNG, JPEG, WebP or still GIF (accepts base64 or URL)
 - **remove_video_background** - Remove background from a video by URL: transparent WebM/MOV, green-screen MP4, looping transparent GIF or alpha matte, audio kept (except GIF)
 - **get_job** - Check the status of a video job and get its download link
 - **get_account** - Check your account info and credit balance
@@ -307,15 +307,15 @@ Open Cline settings and add to the MCP Servers configuration:
 
 ### remove_background
 
-Remove the background from an image.
+Remove the background from an image (PNG, JPEG, WebP or still GIF, up to 20 MB). Animated GIFs are videos: use `remove_video_background`. If one is sent here anyway, the tool returns the video job (poll it with `get_job`) instead of an image.
 
 **Parameters:**
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
-| `image` | string | Yes | Base64-encoded image or URL to an image |
+| `image` | string | Yes | Base64-encoded image or URL to a PNG, JPEG, WebP or still GIF image |
 | `format` | string | No | Output format: `png`, `jpg`, `webp` (default: `png`) |
-| `channels` | string | No | Color channels: `rgba` for transparency, `rgb` for opaque (default: `rgba`) |
+| `channels` | string | No | Color channels: `rgba` for transparency, `rgb` for opaque (on `bg_color`, white by default), `alpha` for the grayscale alpha mask only (default: `rgba`) |
 | `bg_color` | string | No | Background color when using `rgb` channels (e.g., `#ffffff`) |
 | `size` | string | No | Output size preset: `full`, `preview`, `medium`, `hd` (default: `full`). Ignored when `width`/`height` is set |
 | `crop` | boolean | No | Crop to subject bounds (default: `false`) |
@@ -342,14 +342,14 @@ assistant can show and look at it), followed by a text block with the metadata:
 
 ### remove_video_background
 
-Remove the background from a video. Pass a public URL; the result is a direct download link that stays valid for 24 hours. Video costs 5 credits per second (10 per second above 30 fps).
+Remove the background from a video. Pass a public URL; the result is a direct download link that stays valid for 24 hours. Video costs 5 credits per second, rounded up (10 per second above 30 fps; animated GIFs are always 5 per second whatever their frame rate). Credits are charged when the job is accepted and refunded if it fails.
 
 **Parameters:**
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `video_url` | string | Yes | Public `https` URL of the video (mp4, mov, webm, m4v, mkv or animated gif; up to 500 MB and 5 minutes) |
-| `format` | string | No | Output container: `webm` (VP9, transparent), `mov` (ProRes 4444, transparent), `mp4` (H.264, composited onto `bg_color`), `gif` (looping GIF, 1-bit transparency, no audio, capped at 720p; `size: preview` for sticker-sized output) (default: `webm`) |
+| `format` | string | No | Output container: `webm` (VP9, transparent), `mov` (ProRes 4444, transparent), `mp4` (H.264, composited onto `bg_color`), `gif` (looping GIF, 1-bit transparency, no audio, capped at 1280 px on the longest side (720p for widescreen) and 50 fps; `size: preview` for sticker-sized output) (default: `webm`) |
 | `channels` | string | No | `rgba` for transparency, `rgb` for an opaque background, `alpha` for a grayscale matte video (default: `rgba`) |
 | `bg_color` | string | No | Background color when the output has no transparency (`rgb` or `mp4`), e.g. `#00ff00` (default: white) |
 | `size` | string | No | Output size preset: `full`, `preview` (640), `medium` (1280), `hd` (1920) (default: `full`, source resolution up to 4K) |
@@ -443,7 +443,8 @@ How many credits do I have left?
 A failed call is returned as a tool result with `isError: true` and a readable
 message (HTTP status, error code, details, documentation link and request ID),
 so the assistant can see what went wrong. Messages say whether retrying can help:
-used-up credits, an invalid API key or an unsupported image say not to retry.
+used-up credits, an invalid API key, an unsupported image or video, or a URL Poof
+could not download say not to retry the same input.
 Rate limits (429) and temporary processing errors (502/503/504) are retried
 twice with backoff before they are reported.
 
@@ -452,7 +453,7 @@ twice with backoff before they are reported.
 ## Development
 
 Requests to the Poof API send a `User-Agent` of the form
-`poof-mcp/<version> (<client>; <transport>)`, e.g. `poof-mcp/1.4.0 (Claude-ClaudeAI; hosted)`,
+`poof-mcp/<version> (<client>; <transport>)`, e.g. `poof-mcp/1.5.2 (Claude-ClaudeAI; hosted)`,
 so usage can be attributed to the AI client that made it.
 
 Release with `npm version <patch|minor|major>`, which also updates `src/version.ts`.

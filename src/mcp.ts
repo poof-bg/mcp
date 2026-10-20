@@ -36,7 +36,7 @@ export type RequestContext = {
 };
 
 // The User-Agent tells the API's request logs which AI client and transport the
-// traffic came from, e.g. "poof-mcp/1.4.0 (Claude-ClaudeAI; hosted)".
+// traffic came from, e.g. "poof-mcp/<version> (Claude-ClaudeAI; hosted)".
 export function buildUserAgent(client: string, transport: Transport) {
   return `poof-mcp/${VERSION} (${client}; ${transport})`;
 }
@@ -67,7 +67,7 @@ async function getImageBuffer(
     if (!response.ok) {
       throw new Error(
         `Could not download the image from the URL (HTTP ${response.status} ${response.statusText}). ` +
-          'The URL must point directly to a publicly accessible PNG, JPEG or WebP image.'
+          'The URL must point directly to a publicly accessible PNG, JPEG, WebP or GIF image.'
       );
     }
     const arrayBuffer = await response.arrayBuffer();
@@ -207,6 +207,22 @@ function isUpstreamError(err: PoofApiError) {
   return [502, 503, 504].includes(err.status);
 }
 
+// A `url` the API could not fetch (upstream HTTP error, timeout, DNS, redirects)
+// comes back as a 400 validation_error, or a 422 invalid_image when the URL
+// answered with something that is not an image or video, with details.field
+// naming the URL field.
+const URL_FIELDS = ['url', 'image_url', 'video_url'];
+function isUrlDownloadError(err: PoofApiError) {
+  const code = errorCode(err);
+  if (code !== 'validation_error' && code !== 'invalid_image') return false;
+  const message: string = typeof err.body?.message === 'string' ? err.body.message : '';
+  const field = err.body?.details?.field;
+  const namesUrlField =
+    (typeof field === 'string' && URL_FIELDS.includes(field)) ||
+    /\b(url|image_url|video_url)\b/.test(message);
+  return namesUrlField && /download|returned|redirect|resolve|timed out/i.test(message);
+}
+
 function isRetryable(err: PoofApiError) {
   return isRateLimit(err) || isUpstreamError(err);
 }
@@ -250,7 +266,7 @@ const toolRegistry = {
       name: 'remove_background',
       title: 'Remove Image Background',
       description:
-        'Remove the background from an image, leaving the subject on a transparent (or solid color) background. Accepts an image URL or base64-encoded image (PNG, JPEG or WebP, up to 20 MB) and returns the processed image. Can also crop to the subject and resize the result to an exact width x height without stretching (width, height, fit). Costs 1 credit.',
+        'Remove the background from an image, leaving the subject on a transparent (or solid color) background. Accepts an image URL or base64-encoded image (PNG, JPEG, WebP or still GIF, up to 20 MB) and returns the processed image. For animated GIFs and videos use remove_video_background. Can also crop to the subject and resize the result to an exact width x height without stretching (width, height, fit). Costs 1 credit.',
       annotations: {
         title: 'Remove Image Background',
         readOnlyHint: true,
@@ -264,7 +280,7 @@ const toolRegistry = {
           image: {
             type: 'string',
             description:
-              'Image input: a publicly accessible URL to a PNG, JPEG or WebP image (including https://), or base64-encoded image data (optionally as a data: URL)',
+              'Image input: a publicly accessible URL to a PNG, JPEG, WebP or still GIF image (including https://), or base64-encoded image data (optionally as a data: URL). Animated GIFs are videos: use remove_video_background',
           },
           format: {
             type: 'string',
@@ -274,10 +290,10 @@ const toolRegistry = {
           },
           channels: {
             type: 'string',
-            enum: ['rgba', 'rgb'],
+            enum: ['rgba', 'rgb', 'alpha'],
             default: 'rgba',
             description:
-              "Output color channels. Use 'rgba' for transparency, 'rgb' for opaque background",
+              "Output color channels. Use 'rgba' for transparency, 'rgb' for an opaque background (bg_color, white by default), 'alpha' for the grayscale alpha mask only",
           },
           bg_color: {
             type: 'string',
@@ -355,6 +371,23 @@ const toolRegistry = {
 
       const response = await callPoofApi('/remove', {}, ctx, 'POST', formData);
 
+      // An animated GIF (or a video passed as an image) is a video for the API:
+      // it answers 202 with a job instead of an image. Hand the job back rather
+      // than encoding its JSON as a picture.
+      if (response.status === 202) {
+        const job = (await response.json()) as Record<string, any>;
+        return {
+          success: true,
+          job,
+          hint:
+            'The input is an animated GIF or a video, so Poof started a video job ' +
+            `(${job.credits !== undefined ? `${job.credits} credits, ` : ''}charged on accept and refunded if the job fails) ` +
+            'instead of returning an image. ' +
+            `Call get_job with job_id "${job.id}" until status is completed, then use result_url. ` +
+            'Next time use remove_video_background for animated GIFs and videos.',
+        };
+      }
+
       // Get response metadata
       const width = parseInt(response.headers.get('X-Image-Width') || '0', 10);
       const height = parseInt(response.headers.get('X-Image-Height') || '0', 10);
@@ -383,7 +416,7 @@ const toolRegistry = {
       name: 'remove_video_background',
       title: 'Remove Video Background',
       description:
-        'Remove the background from a video given by public URL. Returns a job; when wait is true (default) the tool polls for up to 50 seconds and returns the finished job with result_url (a direct download link valid for 24 hours). For longer videos call get_job with the returned job id until status is completed. Costs 5 credits per second of video (10 per second above 30 fps).',
+        'Remove the background from a video given by public URL. Returns a job; when wait is true (default) the tool polls for up to 50 seconds and returns the finished job with result_url (a direct download link valid for 24 hours). For longer videos call get_job with the returned job id until status is completed. Costs 5 credits per second of video, rounded up (10 per second above 30 fps; animated GIFs are always 5 per second), charged when the job is accepted and refunded if it fails.',
       annotations: {
         title: 'Remove Video Background',
         readOnlyHint: true,
@@ -404,7 +437,7 @@ const toolRegistry = {
             enum: ['webm', 'mov', 'mp4', 'gif'],
             default: 'webm',
             description:
-              "Output container. 'webm' (VP9) and 'mov' (ProRes 4444) keep transparency; 'mp4' (H.264) has no alpha and is composited onto bg_color; 'gif' is a looping GIF with 1-bit transparency and no audio, capped at 720p and 50 fps (large files, soft edges are hard-cut) for stickers, chat and email: use size 'preview' for sticker-sized output",
+              "Output container. 'webm' (VP9) and 'mov' (ProRes 4444) keep transparency; 'mp4' (H.264) has no alpha and is composited onto bg_color; 'gif' is a looping GIF with 1-bit transparency and no audio, capped at 1280 px on the longest side (720p for widescreen) and 50 fps (large files, soft edges are hard-cut) for stickers, chat and email: use size 'preview' for sticker-sized output",
           },
           channels: {
             type: 'string',
@@ -480,7 +513,7 @@ const toolRegistry = {
       name: 'get_job',
       title: 'Get Video Job',
       description:
-        'Get the status of a video background removal job started with remove_video_background. Polling is free. When status is completed the job carries result_url, a direct download link valid for 24 hours.',
+        'Get the status of a video background removal job started with remove_video_background (or by remove_background given an animated GIF). Polling is free. When status is completed the job carries result_url, a direct download link valid for 24 hours.',
       annotations: {
         title: 'Get Video Job',
         readOnlyHint: true,
@@ -657,11 +690,15 @@ function errorHint(err: PoofApiError): string | undefined {
       'it requires an upgrade at https://dash.poof.bg.'
     );
   }
-  if (code === 'image_too_large' || err.status === 413) {
-    return 'The image is larger than 20 MB. Do not retry the same image; use a smaller or compressed one.';
-  }
-  if (code === 'invalid_image' || err.status === 422) {
-    return 'Only PNG, JPEG and WebP images are supported. Do not retry the same image.';
+  // Match the API's error code first: images and videos share the 413 and 422
+  // statuses but have different limits and formats.
+  if (isUrlDownloadError(err)) {
+    return (
+      'Poof could not download the file at the URL (see the status or reason above). The URL ' +
+      'must be public and point directly to the image or video file, not to a web page or a ' +
+      'link that needs a login. Some hosts block automated downloads. Do not retry the same ' +
+      'URL unchanged (a timeout may succeed once more); use a direct link from another host.'
+    );
   }
   if (code === 'video_too_large') {
     return 'The video is larger than the limit (100 MB uploaded, 500 MB by URL). Do not retry the same video; use a smaller or shorter one.';
@@ -671,6 +708,21 @@ function errorHint(err: PoofApiError): string | undefined {
   }
   if (code === 'invalid_video') {
     return 'The file could not be read as a video (mp4, mov, webm, m4v, mkv or animated gif). Do not retry the same URL.';
+  }
+  if (code === 'image_too_large') {
+    return 'The image is larger than 20 MB. Do not retry the same image; use a smaller or compressed one.';
+  }
+  if (code === 'invalid_image') {
+    return 'Only PNG, JPEG, WebP and GIF images are supported. Do not retry the same image.';
+  }
+  if (err.status === 413) {
+    return 'The file is too large (images up to 20 MB; videos up to 100 MB uploaded or 500 MB by URL). Do not retry the same file; use a smaller one.';
+  }
+  if (err.status === 422) {
+    return (
+      'The file could not be read as a supported image (PNG, JPEG, WebP, GIF) or video ' +
+      '(mp4, mov, webm, m4v, mkv, animated gif). Do not retry the same file.'
+    );
   }
   if (code === 'job_not_found' || (err.status === 404 && code !== 'processing_failed')) {
     return 'No job with this id exists (jobs are deleted 24 hours after completion). Do not retry; start a new remove_video_background job.';
