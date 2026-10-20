@@ -383,7 +383,7 @@ const toolRegistry = {
       name: 'remove_video_background',
       title: 'Remove Video Background',
       description:
-        'Remove the background from a video given by public URL. Returns a job; when wait is true (default) the tool polls for up to 50 seconds and returns the finished job with result_url (a direct download link valid for 24 hours). For longer videos call get_job with the returned job id until status is completed. Costs 5 credits per second of video.',
+        'Remove the background from a video given by public URL. Returns a job; when wait is true (default) the tool polls for up to 50 seconds and returns the finished job with result_url (a direct download link valid for 24 hours). For longer videos call get_job with the returned job id until status is completed. Costs 5 credits per second of video (10 per second above 30 fps).',
       annotations: {
         title: 'Remove Video Background',
         readOnlyHint: true,

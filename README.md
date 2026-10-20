@@ -342,7 +342,7 @@ assistant can show and look at it), followed by a text block with the metadata:
 
 ### remove_video_background
 
-Remove the background from a video. Pass a public URL; the result is a direct download link that stays valid for 24 hours. Video costs 5 credits per second.
+Remove the background from a video. Pass a public URL; the result is a direct download link that stays valid for 24 hours. Video costs 5 credits per second (10 per second above 30 fps).
 
 **Parameters:**
 

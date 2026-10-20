@@ -2,6 +2,13 @@
 
 ## [Unreleased]
 
+## [1.5.1] - 2026-10-20
+
+### Fixed
+
+- The `remove_video_background` description states the full video rate:
+  5 credits per second, 10 per second above 30 fps
+
 ## [1.5.0] - 2026-10-20
 
 ### Added
