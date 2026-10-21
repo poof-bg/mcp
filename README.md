@@ -316,7 +316,7 @@ Remove the background from an image (PNG, JPEG, WebP or still GIF, up to 20 MB).
 | `image` | string | Yes | Base64-encoded image or URL to a PNG, JPEG, WebP or still GIF image |
 | `format` | string | No | Output format: `png`, `jpg`, `webp` (default: `png`) |
 | `channels` | string | No | Color channels: `rgba` for transparency, `rgb` for opaque (on `bg_color`, white by default), `alpha` for the grayscale alpha mask only (default: `rgba`) |
-| `bg_color` | string | No | Background color when the output has no transparency (`rgb` channels or `jpg` format), e.g. `#ffffff` (default: white) |
+| `bg_color` | string | No | Background color, e.g. `#ffffff`. Setting it fills the background, so the result is opaque; with `rgb` channels or `jpg` format and no `bg_color` the background is white. Ignored with `channels: alpha` |
 | `size` | string | No | Output size preset: `full`, `preview`, `medium`, `hd` (default: `full`). Ignored when `width`/`height` is set |
 | `crop` | boolean | No | Crop to subject bounds (default: `false`) |
 | `width` | integer | No | Output width in pixels (1-6000). Alone, the height follows the aspect ratio |
@@ -349,9 +349,9 @@ Remove the background from a video. Pass a public URL; the result is a direct do
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `video_url` | string | Yes | Public `https` URL of the video (mp4, mov, webm, m4v, mkv or animated gif; up to 500 MB and 5 minutes) |
-| `format` | string | No | Output container: `webm` (VP9, transparent), `mov` (ProRes 4444, transparent), `mp4` (H.264, composited onto `bg_color`), `gif` (looping GIF, 1-bit transparency, no audio, capped at 1280 px on the longest side (720p for widescreen) and 50 fps; `size: preview` for sticker-sized output) (default: `webm`) |
+| `format` | string | No | Output container: `webm` (VP9, transparent unless `bg_color` is set), `mov` (ProRes 4444, transparent unless `bg_color` is set), `mp4` (H.264, composited onto `bg_color`), `gif` (looping GIF, 1-bit transparency, no audio, capped at 1280 px on the longest side (720p for widescreen) and 50 fps; `size: preview` for sticker-sized output) (default: `webm`) |
 | `channels` | string | No | `rgba` for transparency, `rgb` for an opaque background, `alpha` for a grayscale matte video (default: `rgba`) |
-| `bg_color` | string | No | Background color when the output has no transparency (`rgb` or `mp4`), e.g. `#00ff00` (default: white) |
+| `bg_color` | string | No | Background color, e.g. `#00ff00`. Setting it fills the background, so the result is opaque in every format (`webm`, `mov` and `gif` included); with `rgb` or `mp4` and no `bg_color` the background is white. Ignored with `channels: alpha` |
 | `size` | string | No | Output size preset: `full`, `preview` (640), `medium` (1280), `hd` (1920) (default: `full`, source resolution up to 4K) |
 | `wait` | boolean | No | Poll until the job finishes, up to 50 seconds, before returning (default: `true`). Set `false` to get the job id back immediately |
 

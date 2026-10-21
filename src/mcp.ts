@@ -298,7 +298,7 @@ const toolRegistry = {
           bg_color: {
             type: 'string',
             description:
-              "Background color (hex, rgb, or color name) used when the output has no transparency (channels 'rgb' or format 'jpg'). Defaults to white. Example: '#ffffff'",
+              "Background color (hex, rgb, or color name). Setting it fills the background, so the result is opaque; with channels 'rgb' or format 'jpg' and no bg_color the background is white. Omit it for a transparent result. Ignored with channels 'alpha'. Example: '#ffffff'",
           },
           size: {
             type: 'string',
@@ -437,19 +437,19 @@ const toolRegistry = {
             enum: ['webm', 'mov', 'mp4', 'gif'],
             default: 'webm',
             description:
-              "Output container. 'webm' (VP9) and 'mov' (ProRes 4444) keep transparency; 'mp4' (H.264) has no alpha and is composited onto bg_color; 'gif' is a looping GIF with 1-bit transparency and no audio, capped at 1280 px on the longest side (720p for widescreen) and 50 fps (large files, soft edges are hard-cut) for stickers, chat and email: use size 'preview' for sticker-sized output",
+              "Output container. 'webm' (VP9) and 'mov' (ProRes 4444) keep transparency unless bg_color is set; 'mp4' (H.264) has no alpha and is composited onto bg_color; 'gif' is a looping GIF with 1-bit transparency (opaque when bg_color is set) and no audio, capped at 1280 px on the longest side (720p for widescreen) and 50 fps (large files, soft edges are hard-cut) for stickers, chat and email: use size 'preview' for sticker-sized output",
           },
           channels: {
             type: 'string',
             enum: ['rgba', 'rgb', 'alpha'],
             default: 'rgba',
             description:
-              "'rgba' for a transparent video, 'rgb' for an opaque video on bg_color, 'alpha' for a grayscale matte video (no audio)",
+              "'rgba' for a transparent video (opaque on bg_color if one is set), 'rgb' for an opaque video on bg_color, 'alpha' for a grayscale matte video (no audio)",
           },
           bg_color: {
             type: 'string',
             description:
-              "Background color (hex, rgb, or color name) used when the output has no transparency (channels 'rgb' or format 'mp4'). Defaults to white. Example: '#00ff00' for green screen",
+              "Background color (hex, rgb, or color name). Setting it fills the background, so the result is opaque in every format (webm, mov and gif included); with channels 'rgb' or format 'mp4' and no bg_color the background is white. Omit it for a transparent video. Ignored with channels 'alpha'. Example: '#00ff00' for green screen",
           },
           size: {
             type: 'string',
