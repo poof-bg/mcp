@@ -2,10 +2,15 @@
 
 ## [Unreleased]
 
+### Changed
+
+- `remove_background`: the `bg_color` description says it also applies to
+  `format: "jpg"` (any output without transparency), not only `channels: "rgb"`
+
 ## [1.5.2] - 2026-10-20
 
 First npm release since 1.5.0. It includes the changes listed under 1.5.1,
-which was never published to npm or tagged.
+which was tagged (`v1.5.1`) but never published to npm.
 
 ### Fixed
 

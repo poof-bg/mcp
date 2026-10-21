@@ -298,7 +298,7 @@ const toolRegistry = {
           bg_color: {
             type: 'string',
             description:
-              "Background color (hex, rgb, or color name). Only applies when channels is 'rgb'. Example: '#ffffff'",
+              "Background color (hex, rgb, or color name) used when the output has no transparency (channels 'rgb' or format 'jpg'). Defaults to white. Example: '#ffffff'",
           },
           size: {
             type: 'string',

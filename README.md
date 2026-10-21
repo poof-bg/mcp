@@ -316,7 +316,7 @@ Remove the background from an image (PNG, JPEG, WebP or still GIF, up to 20 MB).
 | `image` | string | Yes | Base64-encoded image or URL to a PNG, JPEG, WebP or still GIF image |
 | `format` | string | No | Output format: `png`, `jpg`, `webp` (default: `png`) |
 | `channels` | string | No | Color channels: `rgba` for transparency, `rgb` for opaque (on `bg_color`, white by default), `alpha` for the grayscale alpha mask only (default: `rgba`) |
-| `bg_color` | string | No | Background color when using `rgb` channels (e.g., `#ffffff`) |
+| `bg_color` | string | No | Background color when the output has no transparency (`rgb` channels or `jpg` format), e.g. `#ffffff` (default: white) |
 | `size` | string | No | Output size preset: `full`, `preview`, `medium`, `hd` (default: `full`). Ignored when `width`/`height` is set |
 | `crop` | boolean | No | Crop to subject bounds (default: `false`) |
 | `width` | integer | No | Output width in pixels (1-6000). Alone, the height follows the aspect ratio |
