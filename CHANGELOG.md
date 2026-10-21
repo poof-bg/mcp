@@ -6,6 +6,12 @@
 
 - `remove_background`: the `bg_color` description says it also applies to
   `format: "jpg"` (any output without transparency), not only `channels: "rgb"`
+- `remove_background` and `remove_video_background`: `bg_color` is described
+  by one rule: setting it fills the background, so the result is opaque on that
+  colour (for video in every format, webm, mov and gif included); with `rgb`
+  channels (or `jpg`/`mp4`) and no `bg_color` the background is white; ignored
+  with `channels: "alpha"`. Previously it said `bg_color` was ignored for
+  transparent output
 
 ## [1.5.2] - 2026-10-20
 
